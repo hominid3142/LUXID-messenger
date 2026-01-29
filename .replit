@@ -1,21 +1,27 @@
 modules = ["nodejs-20", "web", "postgresql-16", "python-3.11"]
-run = "npm run dev"
+run = "python main.py"
 hidden = [".config", ".git", "generated-icon.png", "node_modules", "dist"]
 
 [nix]
 channel = "stable-24_05"
+packages = ["psmisc"]
 
 [[ports]]
 localPort = 5000
 externalPort = 80
 
+[[ports]]
+localPort = 8080
+externalPort = 8080
+
 [env]
 PORT = "5000"
 
 [deployment]
-deploymentTarget = "autoscale"
-run = ["node", "./dist/index.cjs"]
-build = ["npm", "run", "build"]
+deploymentTarget = "autoscale" # 현재 무료 티어이므로 autoscale로 유지됨
+run = ["python", "main.py"]
+build = ["pip", "install", "fastapi", "uvicorn", "sqlalchemy", "google-genai"]
+healthCheckPath = "/health" # 이 줄을 추가
 
 [workflows]
 runButton = "Project"
@@ -35,5 +41,9 @@ author = "agent"
 
 [[workflows.workflow.tasks]]
 task = "shell.exec"
-args = "npm run dev"
+args = "python main.py"
 waitForPort = 5000
+
+[userenv]
+
+[userenv.shared]
