@@ -15,12 +15,19 @@ localPort = 8080
 externalPort = 8080
 
 [env]
-PORT = "5000"
 
 [deployment]
+build = [
+  "pip",
+  "install",
+  "fastapi",
+  "uvicorn",
+  "sqlalchemy",
+  "google-genai",
+  "psycopg2-binary",
+]
 deploymentTarget = "autoscale" # 현재 무료 티어이므로 autoscale로 유지됨
 run = ["python", "main.py"]
-build = ["pip", "install", "fastapi", "uvicorn", "sqlalchemy", "google-genai"]
 healthCheckPath = "/health" # 이 줄을 추가
 
 [workflows]
@@ -42,7 +49,6 @@ author = "agent"
 [[workflows.workflow.tasks]]
 task = "shell.exec"
 args = "python main.py"
-waitForPort = 5000
 
 [userenv]
 

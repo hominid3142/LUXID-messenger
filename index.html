@@ -60,7 +60,7 @@
                 padding: 25px;
                 display: flex;
                 flex-direction: column;
-                gap: 20px;
+                gap: 6px; /* 전체 요소 간격 축소 */
                 background: #fff;
                 overflow-y: auto;
                 display: none;
@@ -188,6 +188,15 @@
                 font-size: 22px;
                 font-weight: 800;
             }
+            .server-status-wrap {
+                display: flex;
+                align-items: center;
+                gap: 5px;
+                margin-left: 10px;
+                font-size: 10px;
+                font-weight: 700;
+                color: var(--text-sub);
+            }
             #friend-list {
                 flex: 1;
                 overflow-y: auto;
@@ -292,9 +301,33 @@
             }
             .header-info {
                 flex: 1;
+                display: flex;
+                flex-direction: column;
+                justify-content: center;
+            }
+            .header-info .name {
                 font-weight: 700;
                 font-size: 16px;
             }
+            .header-info .status {
+                font-size: 11px;
+                color: var(--text-sub);
+                font-weight: 400;
+                margin-top: 1px;
+                height: 14px;
+                transition: color 0.3s;
+            }
+            .header-info .status.online {
+                color: var(--accent-green);
+            }
+            .header-info .status.offline {
+                color: var(--text-sub);
+            }
+            .header-info .status.typing {
+                color: var(--blue);
+                font-weight: bold;
+            }
+
             #chat-area {
                 flex: 1;
                 overflow-y: auto;
@@ -340,13 +373,6 @@
             .msg-row.ai {
                 align-items: flex-start;
             }
-            .typing-indicator {
-                font-size: 11px;
-                color: var(--text-sub);
-                font-style: italic;
-                padding: 5px;
-                display: none;
-            }
             #input-area {
                 padding: 15px 20px;
                 border-top: 1px solid var(--border);
@@ -384,8 +410,9 @@
                 color: #c7c7cc;
                 text-transform: uppercase;
                 letter-spacing: 1.2px;
-                margin-bottom: 8px;
-                margin-top: 15px;
+                margin-bottom: 4px; /* 타이틀 아래 간격 최소화 */
+                margin-top: 10px;
+                flex-shrink: 0; /* 타이틀 압축 방지 */
             }
             #persona-info {
                 background: var(--gray-bubble);
@@ -393,6 +420,7 @@
                 border-radius: 12px;
                 font-size: 13px;
                 line-height: 1.6;
+                flex-shrink: 0;
             }
             .param-grid {
                 display: grid;
@@ -401,6 +429,7 @@
                 background: var(--gray-bubble);
                 padding: 15px;
                 border-radius: 12px;
+                flex-shrink: 0;
             }
             .grid-col-title {
                 font-size: 10px;
@@ -450,6 +479,7 @@
                 font-size: 12px;
                 line-height: 1.6;
                 color: var(--text-main);
+                flex-shrink: 0;
             }
             #plan-info b {
                 color: var(--blue);
@@ -466,10 +496,12 @@
                 font-family: monospace;
                 font-size: 11px;
                 line-height: 1.5;
-                height: 140px;
+                height: 100px; /* 세로 폭 충분히 확장 */
+                min-height: 100px; /* 강제성 부여 */
+                flex-shrink: 0; /* 부모 flex 압축 무시 */
                 overflow-y: auto;
                 border: 1px solid #2d2d30;
-                white-space: pre-wrap;
+                white-space: pre-line;
             }
             .dev-log-window::-webkit-scrollbar {
                 width: 3px;
@@ -481,10 +513,11 @@
             .engine-ctrl {
                 display: flex;
                 align-items: center;
-                justify-content: space-between;
+                justify-content: flex-end;
                 background: var(--gray-bubble);
                 padding: 12px;
                 border-radius: 12px;
+                flex-shrink: 0;
             }
             .status-dot {
                 width: 8px;
@@ -569,7 +602,13 @@
 
         <aside id="sidebar">
             <div class="side-header">
-                <h1>EVE</h1>
+                <div style="display: flex; align-items: center">
+                    <h1>EVE</h1>
+                    <div class="server-status-wrap">
+                        <div id="engine-dot" class="status-dot active"></div>
+                        <span id="engine-text">Active</span>
+                    </div>
+                </div>
                 <button
                     class="dev-trigger-btn"
                     onclick="document.body.classList.toggle('show-auth')"
@@ -588,15 +627,14 @@
                 <div class="mobile-back" onclick="switchMobileView('list')">
                     〈
                 </div>
-                <div class="header-info" id="active-friend-name">
-                    대화방을 선택하세요
+                <div class="header-info">
+                    <div id="active-friend-name" class="name">
+                        대화방을 선택하세요
+                    </div>
+                    <div id="active-friend-status" class="status"></div>
                 </div>
             </header>
-            <div id="chat-area">
-                <div id="typing-indicator" class="typing-indicator">
-                    상대 입력 중...
-                </div>
-            </div>
+            <div id="chat-area"></div>
             <div id="input-area">
                 <input
                     id="msg-input"
@@ -631,19 +669,6 @@
 
             <div class="panel-title">Engine Control</div>
             <div class="engine-ctrl">
-                <div
-                    class="status-info"
-                    style="
-                        display: flex;
-                        align-items: center;
-                        gap: 8px;
-                        font-size: 12px;
-                        font-weight: 700;
-                    "
-                >
-                    <div id="engine-dot" class="status-dot active"></div>
-                    <span id="engine-text">Server Active</span>
-                </div>
                 <div style="display: flex; gap: 5px">
                     <button
                         class="shutdown-btn"
@@ -770,6 +795,7 @@
                     font-weight: 900;
                     cursor: pointer;
                     margin-bottom: 20px;
+                    flex-shrink: 0;
                 "
             >
                 APPLY CHANGES (COMMIT)
@@ -784,9 +810,7 @@
             let isProcessingQueue = false;
             const DEV_PASS = "31313142";
 
-            function toggleFacts() {
-                // 이 기능은 현재 로그창으로 통합되어 사용되지 않으나 코드는 유지합니다.
-            }
+            function toggleFacts() {}
 
             function checkAuth() {
                 const input = document.getElementById("pass-input");
@@ -827,7 +851,7 @@
                             const lastMsg =
                                 f.history && f.history.length > 0
                                     ? f.history[f.history.length - 1].content
-                                    : "새로운 대화를 시작해보세요.";
+                                    : "대화 없음";
                             const colorHash = f.name.charCodeAt(0) % 5;
                             const colors = [
                                 "#FF9500",
@@ -887,9 +911,15 @@
                 const f = friendsData.find((item) => item.room_id === roomId);
                 document.getElementById("active-friend-name").innerText =
                     `${f.name} (${f.mbti})`;
+
+                const statusEl = document.getElementById(
+                    "active-friend-status",
+                );
+                statusEl.innerText = "오프라인";
+                statusEl.className = "status offline";
+
                 const chatArea = document.getElementById("chat-area");
-                chatArea.innerHTML =
-                    '<div id="typing-indicator" class="typing-indicator">상대 입력 중...</div>';
+                chatArea.innerHTML = "";
                 if (f.history) {
                     f.history.forEach((h) =>
                         appendMsg(
@@ -900,7 +930,6 @@
                     );
                 }
 
-                // 초기화
                 document.getElementById("m-plan").innerText = "분석 중...";
                 document.getElementById("s-plan").innerText = "분석 중...";
                 document.getElementById("short-feeling-log").innerText =
@@ -928,16 +957,37 @@
             async function processQueue() {
                 if (isProcessingQueue || messageQueue.length === 0) return;
                 isProcessingQueue = true;
-                const indicator = document.getElementById("typing-indicator");
+                const statusEl = document.getElementById(
+                    "active-friend-status",
+                );
 
                 while (messageQueue.length > 0) {
                     const data = messageQueue.shift();
                     const currentF = friendsData.find(
                         (item) => item.room_id === currentRoomId,
                     );
+                    if (!currentF) continue;
+
+                    // 상태 업데이트 우선순위 결정
+                    const msgStatus =
+                        data.status ||
+                        (data.current_status && data.current_status.status);
+                    if (msgStatus) currentF.status = msgStatus;
+                    if (data.typing !== undefined)
+                        currentF.is_typing = data.typing;
+
+                    // 헤더 상태 표시 업데이트
+                    if (currentF.is_typing) {
+                        statusEl.innerText = "입력중...";
+                        statusEl.className = "status typing";
+                    } else {
+                        const s = currentF.status || "offline";
+                        statusEl.innerText =
+                            s === "online" ? "온라인" : "오프라인";
+                        statusEl.className = `status ${s}`;
+                    }
 
                     if (data.current_status) {
-                        // 중기/단기 계획 텍스트 업데이트
                         if (data.current_status.medium_term_plan) {
                             document.getElementById("m-plan").innerText =
                                 data.current_status.medium_term_plan;
@@ -947,7 +997,6 @@
                                 data.current_status.short_term_plan;
                         }
 
-                        // 누적 로그 창 업데이트
                         if (data.current_status.short_feelings) {
                             const sfLog =
                                 document.getElementById("short-feeling-log");
@@ -971,25 +1020,19 @@
                             fwLog.scrollTop = fwLog.scrollHeight;
                         }
 
-                        // 수치 동기화
-                        if (currentF) {
-                            Object.assign(currentF, data.current_status);
-                            syncUI(currentF);
-                        }
+                        Object.assign(currentF, data.current_status);
+                        syncUI(currentF);
                     }
 
                     if (data.responses) {
                         for (const r of data.responses) {
-                            indicator.style.display = "none";
                             appendMsg("ai", r.text, r.ts);
-                            if (currentF) {
-                                if (!currentF.history) currentF.history = [];
-                                currentF.history.push({
-                                    role: "assistant",
-                                    content: r.text,
-                                    ts: r.ts,
-                                });
-                            }
+                            if (!currentF.history) currentF.history = [];
+                            currentF.history.push({
+                                role: "assistant",
+                                content: r.text,
+                                ts: r.ts,
+                            });
                         }
                     }
                 }
@@ -1038,8 +1081,6 @@
                     }
                     ws.send(text);
                     input.value = "";
-                    document.getElementById("typing-indicator").style.display =
-                        "block";
                 }
             }
 
@@ -1048,10 +1089,7 @@
                 const row = document.createElement("div");
                 row.className = `msg-row ${type}`;
                 row.innerHTML = `<div class="bubble ${type}">${text}</div><div class="msg-meta">${ts}</div>`;
-                area.insertBefore(
-                    row,
-                    document.getElementById("typing-indicator"),
-                );
+                area.appendChild(row);
                 area.scrollTop = area.scrollHeight;
             }
 
@@ -1072,10 +1110,7 @@
                     dot.className = isActive
                         ? "status-dot active"
                         : "status-dot";
-                if (text)
-                    text.innerText = isActive
-                        ? "Server Active"
-                        : "Server Offline";
+                if (text) text.innerText = isActive ? "Active" : "Offline";
             }
 
             async function addFriend() {
