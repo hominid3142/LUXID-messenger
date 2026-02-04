@@ -34,7 +34,7 @@ def get_volatile_state(room_id, db_room=None):
             "consecutive_speaks": 0,
             "consecutive_waits": 0,
             "user_consecutive_count": 0,
-            "random_offline_limit": random.randint(150, 250),
+            "random_offline_limit": random.randint(150, 180),
             "activation_pending": False
         }
     return volatile_memory[room_id]
