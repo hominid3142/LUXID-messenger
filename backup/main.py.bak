@@ -2,171 +2,24 @@ import os
 import json
 import asyncio
 import random
-from datetime import datetime, timezone
-from typing import List, Optional
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Body, Depends, HTTPException, status
+from datetime import datetime
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Body
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse
-from fastapi.security import OAuth2PasswordBearer
-from sqlalchemy.orm import Session
 from starlette.websockets import WebSocketState
 
 # 모듈화된 파일들에서 기능 임포트
 from database import engine, SessionLocal, Base
-from models import Persona, ChatRoom, User  # User 모델 추가
+from models import Persona, ChatRoom
 from memory import KST, volatile_memory, get_volatile_state
 from engine import run_medium_thinking, run_short_thinking, run_utterance
-from auth_utils import verify_password, get_password_hash, create_access_token, decode_access_token
 
 app = FastAPI()
-
-# 보안 설정: JWT 토큰 추출을 위한 스킴
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login", auto_error=False)
 
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
 # DB 테이블 생성
 Base.metadata.create_all(bind=engine)
-
-# ---------------------------------------------------------
-# 0. 인증 및 유저 관리 유틸리티
-# ---------------------------------------------------------
-
-
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
-
-
-async def get_current_user(token: str = Depends(oauth2_scheme),
-                           db: Session = Depends(get_db)):
-    """토큰을 검증하여 현재 로그인한 유저 객체를 반환합니다."""
-    if not token:
-        return None
-    payload = decode_access_token(token)
-    if not payload:
-        return None
-    username: str = payload.get("sub")
-    if username is None:
-        return None
-    user = db.query(User).filter(User.username == username).first()
-    return user
-
-
-def update_user_tokens(db: Session, user_id: int, token_count: int):
-    """유저의 누적 토큰 사용량과 마지막 활동 시간을 업데이트합니다."""
-    user = db.query(User).filter(User.id == user_id).first()
-    if user:
-        user.total_tokens += token_count
-        user.last_active = datetime.now(timezone.utc)
-        db.commit()
-
-
-# 초기 관리자 생성 (환경변수 활용)
-@app.on_event("startup")
-async def create_initial_admin():
-    db = SessionLocal()
-    admin_user = db.query(User).filter(User.is_admin == True).first()
-    if not admin_user:
-        # Replit Secrets에 저장된 정보를 우선 사용
-        name = os.environ.get("ADMIN_ID", "admin")
-        pw = os.environ.get("ADMIN_PW", "31313142")
-        new_admin = User(username=name,
-                         hashed_password=get_password_hash(pw),
-                         is_admin=True)
-        db.add(new_admin)
-        db.commit()
-    db.close()
-
-
-# ---------------------------------------------------------
-# 1. 계정 관련 API (Auth)
-# ---------------------------------------------------------
-
-
-@app.post("/register")
-async def register(data: dict = Body(...), db: Session = Depends(get_db)):
-    if db.query(User).filter(User.username == data['username']).first():
-        raise HTTPException(status_code=400, detail="이미 존재하는 아이디입니다.")
-    new_user = User(username=data['username'],
-                    hashed_password=get_password_hash(data['password']),
-                    is_admin=False,
-                    total_tokens=0,
-                    created_at=datetime.utcnow(),
-                    last_active=datetime.utcnow())
-    db.add(new_user)
-    db.commit()
-    return {"status": "success"}
-
-
-@app.post("/login")
-async def login(data: dict = Body(...), db: Session = Depends(get_db)):
-    user = db.query(User).filter(User.username == data['username']).first()
-    if not user or not verify_password(data['password'], user.hashed_password):
-        raise HTTPException(status_code=401, detail="아이디 또는 비밀번호가 틀렸습니다.")
-
-    access_token = create_access_token(data={"sub": user.username})
-    return {
-        "access_token": access_token,
-        "token_type": "bearer",
-        "is_admin": user.is_admin,
-        "username": user.username
-    }
-
-
-# ---------------------------------------------------------
-# 2. 관리자 전용 API (Admin)
-# ---------------------------------------------------------
-
-
-@app.get("/admin/users")
-async def admin_get_users(current_user: User = Depends(get_current_user),
-                          db: Session = Depends(get_db)):
-    if not current_user or not current_user.is_admin:
-        raise HTTPException(status_code=403, detail="권한이 없습니다.")
-    users = db.query(User).all()
-    return [{
-        "id": u.id,
-        "username": u.username,
-        "created_at": u.created_at,
-        "last_active": u.last_active,
-        "total_tokens": u.total_tokens,
-        "is_admin": u.is_admin
-    } for u in users]
-
-
-@app.get("/admin/user/{user_id}/detail")
-async def admin_user_detail(user_id: int,
-                            current_user: User = Depends(get_current_user),
-                            db: Session = Depends(get_db)):
-    if not current_user or not current_user.is_admin:
-        raise HTTPException(status_code=403, detail="권한이 없습니다.")
-
-    rooms = db.query(ChatRoom).filter(ChatRoom.owner_id == user_id).all()
-    return [{
-        "room_id": r.id,
-        "persona_name": r.persona.name,
-        "fact_warehouse": r.fact_warehouse,
-        "history_count": len(r.history) if r.history else 0,
-        "last_summary": r.history[-1]['content'] if r.history else "내역 없음"
-    } for r in rooms]
-
-
-@app.delete("/admin/user/{user_id}")
-async def admin_delete_user(user_id: int,
-                            current_user: User = Depends(get_current_user),
-                            db: Session = Depends(get_db)):
-    if not current_user or not current_user.is_admin:
-        raise HTTPException(status_code=403, detail="권한이 없습니다.")
-    target_user = db.query(User).filter(User.id == user_id).first()
-    if target_user:
-        db.delete(target_user)
-        db.commit()
-    return {"status": "deleted"}
-
 
 # ---------------------------------------------------------
 # 4. WebSocket & Heartbeat Loop
@@ -175,29 +28,11 @@ async def admin_delete_user(user_id: int,
 
 @app.websocket("/ws/chat/{room_id}")
 async def websocket_endpoint(websocket: WebSocket, room_id: int):
-    # 웹소켓 연결 시 토큰 검증 (쿼리 파라미터에서 추출 권장)
-    token = websocket.query_params.get("token")
-    db = SessionLocal()
-
-    # 임시: 토큰이 없으면 첫 번째 유저(관리자)로 간주 (지인 테스트용)
-    current_user_obj = None
-    if token:
-        payload = decode_access_token(token)
-        if payload:
-            current_user_obj = db.query(User).filter(
-                User.username == payload.get("sub")).first()
-
-    if not current_user_obj:
-        current_user_obj = db.query(User).filter(User.is_admin == True).first()
-
     await websocket.accept()
 
-    room = db.query(ChatRoom).filter(
-        ChatRoom.id == room_id,
-        ChatRoom.owner_id == current_user_obj.id).first()
-    if not room:
-        db.close()
-        return await websocket.close()
+    db = SessionLocal()
+    room = db.query(ChatRoom).filter(ChatRoom.id == room_id).first()
+    if not room: return await websocket.close()
 
     p = room.persona
     p_dict = {
@@ -225,6 +60,9 @@ async def websocket_endpoint(websocket: WebSocket, room_id: int):
                     v_state['consecutive_waits'] = 0
                     v_state['last_user_ts'] = datetime.now(KST)
 
+                    if v_state['user_consecutive_count'] == 1:
+                        v_state['tick_counter'] = 0
+
                     if v_state['status'] == "offline":
                         v_state['status'] = "online"
                         v_state['is_ticking'] = True
@@ -234,7 +72,6 @@ async def websocket_endpoint(websocket: WebSocket, room_id: int):
             pass
 
     async def worker():
-        user_id = current_user_obj.id
         try:
             while True:
                 await asyncio.sleep(1.0)  # 틱 간격
@@ -284,27 +121,20 @@ async def websocket_endpoint(websocket: WebSocket, room_id: int):
 
                 # 2. 인지 엔진 실행 (락 해제 상태로 I/O 수행)
                 inference_res = None
-                tokens_used = 0
-
-                db = SessionLocal()  # 토큰 정산을 위해 DB 세션 오픈
                 if current_tick == 19:
-                    # 중기 사고: 결과와 사용된 토큰 수 반환받음
-                    res_text, tokens = await run_medium_thinking(
-                        v_state, p_dict, room_id)
-                    tokens_used = tokens
+                    await run_medium_thinking(v_state, p_dict, room_id)
                     # DB 저장 (중기 사고 완료 시)
+                    db = SessionLocal()
                     db_room = db.query(ChatRoom).filter(
                         ChatRoom.id == room_id).first()
                     if db_room:
                         db_room.fact_warehouse = v_state['fact_warehouse']
                         db.commit()
+                    db.close()
                 elif current_tick != 0 and current_tick % 5 == 0:
-                    # 단기 사고: 결과와 사용된 토큰 수 반환받음
-                    res_text, tokens = await run_short_thinking(
-                        v_state, p_dict, room_id)
-                    tokens_used = tokens
+                    await run_short_thinking(v_state, p_dict, room_id)
                 else:
-                    if consecutive_speaks >= 2:  #연속 발화가 2회 이상이면 3틱마다 WAIT
+                    if consecutive_speaks >= 2:
                         async with v_state['lock']:
                             v_state['consecutive_waits'] += 1
                             inference_res = {"action": "WAIT"}
@@ -316,17 +146,10 @@ async def websocket_endpoint(websocket: WebSocket, room_id: int):
                             datetime.now(KST) -
                             v_state['last_user_ts']).total_seconds()
                         if time_since_user < 20 or current_tick % 3 == 0:
-                            # 발화 실행: 결과와 사용된 토큰 수 반환받음
-                            inference_res, tokens = await run_utterance(
+                            inference_res = await run_utterance(
                                 v_state, p_dict, room_id)
-                            tokens_used = tokens
                         else:
                             inference_res = {"action": "WAIT"}
-
-                # 토큰 소모량 정산 및 활동 기록
-                if tokens_used > 0:
-                    update_user_tokens(db, user_id, tokens_used)
-                db.close()
 
                 # 3. 결과 반영 및 전송 (짧은 락)
                 async with v_state['lock']:
@@ -402,16 +225,13 @@ async def websocket_endpoint(websocket: WebSocket, room_id: int):
 
 
 # ---------------------------------------------------------
-# 5. API 리소스 (유저별 필터링 적용)
+# 5. API 리소스
 # ---------------------------------------------------------
 
 
 @app.post("/add-friend")
-async def add_friend(current_user: User = Depends(get_current_user),
-                     db: Session = Depends(get_db)):
-    if not current_user:
-        raise HTTPException(status_code=401)
-
+async def add_friend():
+    db = SessionLocal()
     mbtis = [
         "ISTJ", "ISFJ", "INFJ", "INTJ", "ISTP", "ISFP", "INFP", "INTP", "ESTP",
         "ESFP", "ENFP", "ENTP", "ESTJ", "ESFJ", "ENFJ", "ENTJ"
@@ -427,31 +247,29 @@ async def add_friend(current_user: User = Depends(get_current_user),
 
     gender = random.choice(["남성", "여성"])
     name = random.choice(male_names if gender == "남성" else female_names)
-    p = Persona(
-        owner_id=current_user.id,  # 소유자 지정
-        name=name,
-        age=random.randint(19, 36),
-        gender=gender,
-        mbti=random.choice(mbtis),
-        p_seriousness=random.randint(1, 10),
-        p_friendliness=random.randint(1, 10),
-        p_rationality=random.randint(1, 10),
-        p_slang=random.randint(1, 10))
+    p = Persona(name=name,
+                age=random.randint(19, 36),
+                gender=gender,
+                mbti=random.choice(mbtis),
+                p_seriousness=random.randint(1, 10),
+                p_friendliness=random.randint(1, 10),
+                p_rationality=random.randint(1, 10),
+                p_slang=random.randint(1, 10))
     db.add(p)
     db.commit()
     db.refresh(p)
 
-    room = ChatRoom(
-        owner_id=current_user.id,  # 소유자 지정
-        persona_id=p.id,
-        v_likeability=random.randint(20, 100),
-        v_erotic=random.randint(20, 30),
-        v_v_mood=random.randint(20, 100),
-        v_relationship=random.randint(20, 100))
+    # 상태값 랜덤화 (20~100) 반영
+    room = ChatRoom(persona_id=p.id,
+                    v_likeability=random.randint(20, 100),
+                    v_erotic=random.randint(20, 100),
+                    v_v_mood=random.randint(20, 100),
+                    v_relationship=random.randint(20, 100))
     db.add(room)
     db.commit()
     db.refresh(room)
 
+    # 생성 즉시 초기 중기 사고(Medium Thinking) 1회 수행
     p_dict = {
         "name": p.name,
         "age": p.age,
@@ -463,23 +281,19 @@ async def add_friend(current_user: User = Depends(get_current_user),
         "p_slang": p.p_slang
     }
     v_state = get_volatile_state(room.id, room)
-    _, tokens = await run_medium_thinking(v_state, p_dict, room.id)
+    await run_medium_thinking(v_state, p_dict, room.id)
 
-    update_user_tokens(db, current_user.id, tokens)
+    # 사고 결과 DB 저장 및 인덱스 고정
     room.fact_warehouse = v_state['fact_warehouse']
     db.commit()
+    db.close()
     return {"status": "success"}
 
 
 @app.get("/friends")
-def get_friends(current_user: User = Depends(get_current_user),
-                db: Session = Depends(get_db)):
-    if not current_user:
-        return []
-
-    # 자신의 친구들만 조회
-    rooms = db.query(ChatRoom).filter(
-        ChatRoom.owner_id == current_user.id).all()
+def get_friends():
+    db = SessionLocal()
+    rooms = db.query(ChatRoom).all()
     res = [{
         "room_id": r.id,
         "name": r.persona.name,
@@ -496,20 +310,16 @@ def get_friends(current_user: User = Depends(get_current_user),
         "v_relationship": r.v_relationship,
         "history": r.history
     } for r in rooms]
+    db.close()
     return res
 
 
 @app.post("/update-params/{room_id}")
-async def update_params(room_id: int,
-                        params: dict = Body(...),
-                        current_user: User = Depends(get_current_user),
-                        db: Session = Depends(get_db)):
-    if not current_user:
-        raise HTTPException(status_code=401)
-
-    room = db.query(ChatRoom).filter(
-        ChatRoom.id == room_id, ChatRoom.owner_id == current_user.id).first()
+async def update_params(room_id: int, params: dict = Body(...)):
+    db = SessionLocal()
+    room = db.query(ChatRoom).filter(ChatRoom.id == room_id).first()
     if not room:
+        db.close()
         return {"status": "error"}
 
     p = room.persona
@@ -529,28 +339,23 @@ async def update_params(room_id: int,
             ]:
                 if k in params: vs["p_dict"][k] = params[k]
 
+    db.close()
     return {"status": "success"}
 
 
 @app.delete("/delete-friend/{room_id}")
-def delete_friend(room_id: int,
-                  current_user: User = Depends(get_current_user),
-                  db: Session = Depends(get_db)):
-    if not current_user:
-        raise HTTPException(status_code=401)
-
-    room = db.query(ChatRoom).filter(
-        ChatRoom.id == room_id, ChatRoom.owner_id == current_user.id).first()
+def delete_friend(room_id: int):
+    db = SessionLocal()
+    room = db.query(ChatRoom).filter(ChatRoom.id == room_id).first()
     if room:
-        db.delete(room.persona)  # Persona 삭제 시 Cascade로 ChatRoom도 삭제됨
+        db.delete(room.persona)
         db.commit()
+        db.close()
     return {"status": "deleted"}
 
 
 @app.post("/reset-db")
-async def reset_db(current_user: User = Depends(get_current_user)):
-    if not current_user or not current_user.is_admin:
-        raise HTTPException(status_code=403)
+async def reset_db():
     Base.metadata.drop_all(bind=engine)
     Base.metadata.create_all(bind=engine)
     os._exit(0)
@@ -561,6 +366,7 @@ def health_check():
     return {"status": "ok"}
 
 
+# manifest.json 파일을 서빙하기 위한 라우트 추가
 @app.get("/manifest.json")
 def get_manifest():
     with open("manifest.json", "r", encoding="utf-8") as f:

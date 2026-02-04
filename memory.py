@@ -1,0 +1,40 @@
+import asyncio
+import random
+from datetime import datetime, timedelta, timezone
+
+KST = timezone(timedelta(hours=9))
+
+# [휘발성 메모리 관리소]
+volatile_memory = {}
+
+
+def get_volatile_state(room_id, db_room=None):
+    if room_id not in volatile_memory:
+        volatile_memory[room_id] = {
+            "tick_counter": 0,  # 모든 패턴을 발화(0번)부터 시작하도록 수정
+            "input_pocket": [],
+            "ram_history": db_room.history if db_room else [],
+            "fact_warehouse": db_room.fact_warehouse if db_room else [],
+            "v_likeability": db_room.v_likeability if db_room else 50,
+            "v_erotic": db_room.v_erotic if db_room else 30,
+            "v_v_mood": db_room.v_v_mood if db_room else 50,
+            "v_relationship": db_room.v_relationship if db_room else 20,
+            "medium_term_diagnosis": "대화가 시작되었습니다. 자기 페이스대로 나가세요.",
+            "short_term_plan": "상대에 대해 묻거나 내가 하고 싶은 말을 시작한다.",
+            "short_term_logs": [],
+            "medium_term_logs": [],
+            "last_medium_history_len": 0,
+            "last_short_history_len": 0,
+            "is_greeted": False,
+            "lock": asyncio.Lock(),
+            "status": "offline",
+            "is_ticking": False,
+            "last_interaction_ts": datetime.now(KST),
+            "last_user_ts": datetime.now(KST),
+            "consecutive_speaks": 0,
+            "consecutive_waits": 0,
+            "user_consecutive_count": 0,
+            "random_offline_limit": random.randint(150, 250),
+            "activation_pending": False
+        }
+    return volatile_memory[room_id]

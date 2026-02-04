@@ -1,0 +1,464 @@
+let globalSockets = {}; // 룸 아이디별 웹소켓 관리
+let currentRoomId = null;
+let friendsData = [];
+let messageQueue = [];
+let unreadCounts = {}; // 안 읽은 메시지 함
+let isProcessingQueue = false;
+let currentView = "list";
+let notiTargetRoomId = null;
+const DEV_PASS = "31313142";
+
+function handleDevBtn() {
+    const isUnlocked =
+        document.body.classList.contains("dev-unlocked");
+    if (isUnlocked) {
+        // Lock 처리
+        document.body.classList.remove("dev-unlocked", "is-dev");
+        document.getElementById("dev-btn").innerText = "DEV";
+        switchMobileView("list");
+    } else {
+        // 암호창 띄우기
+        document.body.classList.add("show-auth");
+    }
+}
+
+function checkAuth() {
+    const input = document.getElementById("pass-input");
+    if (input.value === DEV_PASS) {
+        document.body.classList.remove("dev-locked", "show-auth");
+        document.body.classList.add("dev-unlocked");
+        document.getElementById("dev-btn").innerText = "DEV OFF";
+        input.value = "";
+    } else {
+        alert("비밀번호가 틀렸습니다.");
+        input.value = "";
+    }
+}
+
+function closeAuth() {
+    document.body.classList.remove("show-auth");
+    document.getElementById("pass-input").value = "";
+}
+
+function switchMobileView(view) {
+    currentView = view;
+    document.body.classList.remove(
+        "is-chatting",
+        "is-dev",
+        "show-auth",
+    );
+    const navs = document.querySelectorAll(".nav-item");
+    navs.forEach((n) => n.classList.remove("active"));
+
+    const fl = document.getElementById("friend-list");
+    const cl = document.getElementById("chat-list");
+    const ab = document.getElementById("add-friend-btn");
+    const title = document.getElementById("tab-title");
+
+    if (view === "list") {
+        fl.style.display = "block";
+        cl.style.display = "none";
+        ab.style.display = "block";
+        title.innerText = "친구";
+        navs[0].classList.add("active");
+        renderFriendList(); // 탭 전환 시 즉시 렌더링하도록 추가
+    } else if (view === "chats") {
+        fl.style.display = "none";
+        cl.style.display = "block";
+        ab.style.display = "none";
+        title.innerText = "대화";
+        navs[1].classList.add("active");
+        renderChatList();
+    } else if (view === "chat") {
+        document.body.classList.add("is-chatting");
+    } else if (view === "dev") {
+        document.body.classList.add("is-dev");
+        document.getElementById("nav-dev").classList.add("active");
+    }
+}
+
+async function loadFriends() {
+    try {
+        const res = await fetch("/friends");
+        friendsData = await res.json();
+        renderFriendList();
+        renderChatList();
+    } catch (e) {
+        setEngineStatus(false);
+    }
+}
+
+function renderFriendList() {
+    const list = document.getElementById("friend-list");
+    list.innerHTML = friendsData
+        .map((f) => {
+            const colors = [
+                "#FF9500",
+                "#FF2D55",
+                "#AF52DE",
+                "#5AC8FA",
+                "#34C759",
+            ];
+            const color = colors[f.name.charCodeAt(0) % 5];
+            const isOnline = f.status === "online";
+            return `
+            <div class="friend-item ${isOnline ? "is-online" : ""}" onclick="joinRoom(${f.room_id})">
+                <div class="friend-avatar" style="background:${color}">
+                    ${f.name[0]}
+                    <div class="online-dot"></div>
+                </div>
+                <div class="friend-info">
+                    <div class="name-row"><span class="name">${f.name}</span><span class="mbti">${f.mbti}</span></div>
+                    <div class="last-msg">${isOnline ? "온라인" : "오프라인"}</div>
+                </div>
+            </div>
+        `;
+        })
+        .join("");
+}
+
+function renderChatList() {
+    const list = document.getElementById("chat-list");
+    const chattingFriends = friendsData.filter(
+        (f) => f.history && f.history.length > 0,
+    );
+
+    list.innerHTML = chattingFriends
+        .map((f) => {
+            const lastMsg = f.history[f.history.length - 1].content;
+            const colors = [
+                "#FF9500",
+                "#FF2D55",
+                "#AF52DE",
+                "#5AC8FA",
+                "#34C759",
+            ];
+            const color = colors[f.name.charCodeAt(0) % 5];
+            const unread = unreadCounts[f.room_id] || 0;
+
+            return `
+            <div class="friend-item ${unread > 0 ? "has-unread" : ""}" onclick="joinRoom(${f.room_id})">
+                <div class="friend-avatar" style="background:${color}">${f.name[0]}</div>
+                <div class="friend-info">
+                    <div class="name-row"><span class="name">${f.name}</span></div>
+                    <div class="last-msg">${lastMsg}</div>
+                </div>
+                <div class="unread-badge">${unread}</div>
+                <button class="delete-btn" onclick="deleteFriend(event, ${f.room_id})">×</button>
+            </div>
+        `;
+        })
+        .join("");
+}
+
+function initSocket(roomId) {
+    // 기존 연결이 있다면 유지
+    if (globalSockets[roomId]) return;
+
+    const protocol =
+        location.protocol === "https:" ? "wss:" : "ws:";
+    const ws = new WebSocket(
+        `${protocol}//${location.host}/ws/chat/${roomId}`,
+    );
+
+    ws.onopen = () => setEngineStatus(true);
+    ws.onclose = () => {
+        delete globalSockets[roomId];
+        if (roomId === currentRoomId) setEngineStatus(false);
+    };
+    ws.onmessage = (e) => {
+        const data = JSON.parse(e.data);
+        handleIncomingData(roomId, data);
+    };
+    globalSockets[roomId] = ws;
+}
+
+function handleIncomingData(roomId, data) {
+    const f = friendsData.find((item) => item.room_id === roomId);
+    if (!f) return;
+
+    // 1. 상태 및 헤더 실시간 업데이트
+    const msgStatus =
+        data.status ||
+        (data.current_status && data.current_status.status);
+    if (msgStatus) {
+        f.status = msgStatus;
+        if (currentView === "list") renderFriendList();
+
+        if (roomId === currentRoomId) {
+            const statusEl = document.getElementById(
+                "active-friend-status",
+            );
+            statusEl.innerText =
+                msgStatus === "online" ? "온라인" : "오프라인";
+            statusEl.className = `status ${msgStatus}`;
+        }
+    }
+
+    // 2. Typing 상태 처리
+    if (
+        roomId === currentRoomId &&
+        typeof data.typing !== "undefined"
+    ) {
+        const statusEl = document.getElementById(
+            "active-friend-status",
+        );
+        if (data.typing) {
+            statusEl.innerText = "입력 중...";
+            statusEl.classList.add("typing");
+        } else {
+            statusEl.innerText =
+                f.status === "online" ? "온라인" : "오프라인";
+            statusEl.classList.remove("typing");
+        }
+    }
+
+    // 3. 메시지 처리
+    if (data.responses) {
+        data.responses.forEach((r) => {
+            const msgObj = {
+                role: "assistant",
+                content: r.text,
+                ts: r.ts,
+            };
+            if (!f.history) f.history = [];
+            f.history.push(msgObj);
+
+            if (
+                roomId === currentRoomId &&
+                currentView === "chat"
+            ) {
+                appendMsg("ai", r.text, r.ts);
+            } else {
+                unreadCounts[roomId] =
+                    (unreadCounts[roomId] || 0) + 1;
+                showInAppNoti(f, r.text, roomId);
+                if (currentView === "chats") renderChatList();
+            }
+        });
+    }
+
+    // 4. 개발자 패널 데이터 갱신 (키 동기화)
+    if (roomId === currentRoomId && data.current_status) {
+        const status = data.current_status;
+        if (status.medium_term_plan)
+            document.getElementById("m-plan").innerText =
+                status.medium_term_plan;
+        if (status.short_term_plan)
+            document.getElementById("s-plan").innerText =
+                status.short_term_plan;
+
+        if (status.short_term_logs) {
+            const sfLog =
+                document.getElementById("short-feeling-log");
+            sfLog.innerText = status.short_term_logs.join("\n");
+            sfLog.scrollTop = sfLog.scrollHeight;
+        }
+        if (status.medium_term_logs) {
+            const mrLog =
+                document.getElementById("medium-record-log");
+            mrLog.innerText = status.medium_term_logs.join("\n");
+            mrLog.scrollTop = mrLog.scrollHeight;
+        }
+        if (status.fact_warehouse) {
+            const fwLog =
+                document.getElementById("fact-warehouse-log");
+            fwLog.innerText = status.fact_warehouse
+                .map((fact) => `• ${fact}`)
+                .join("\n");
+            fwLog.scrollTop = fwLog.scrollHeight;
+        }
+        Object.assign(f, status);
+        syncUI(f);
+    }
+}
+
+function showInAppNoti(friend, text, roomId) {
+    const popup = document.getElementById("noti-popup");
+    const colors = [
+        "#FF9500",
+        "#FF2D55",
+        "#AF52DE",
+        "#5AC8FA",
+        "#34C759",
+    ];
+    const avatar = document.getElementById("noti-avatar");
+    avatar.style.background = colors[friend.name.charCodeAt(0) % 5];
+    avatar.innerText = friend.name[0];
+    document.getElementById("noti-name").innerText = friend.name;
+    document.getElementById("noti-text").innerText = text;
+    notiTargetRoomId = roomId;
+
+    popup.classList.add("show");
+    setTimeout(() => popup.classList.remove("show"), 4000);
+}
+
+function handleNotiClick() {
+    if (notiTargetRoomId) {
+        joinRoom(notiTargetRoomId);
+        document
+            .getElementById("noti-popup")
+            .classList.remove("show");
+    }
+}
+
+function updateDevPanel(status, friend) {
+    // handleIncomingData로 통합됨
+}
+
+async function joinRoom(roomId) {
+    // 성능 최적화: 현재 대화 중인 방만 소켓 유지 (기타 방 소켓 종료 권장이나 현재는 연결 시도만 보장)
+    currentRoomId = roomId;
+    unreadCounts[roomId] = 0;
+    switchMobileView("chat");
+
+    const f = friendsData.find((item) => item.room_id === roomId);
+    document.getElementById("active-friend-name").innerText =
+        `${f.name} (${f.mbti})`;
+
+    const statusEl = document.getElementById(
+        "active-friend-status",
+    );
+    statusEl.innerText =
+        f.status === "online" ? "온라인" : "오프라인";
+    statusEl.className = `status ${f.status || "offline"}`;
+
+    const chatArea = document.getElementById("chat-area");
+    chatArea.innerHTML = "";
+    if (f.history) {
+        f.history.forEach((h) =>
+            appendMsg(
+                h.role === "user" ? "user" : "ai",
+                h.content,
+                h.ts,
+            ),
+        );
+    }
+    syncUI(f);
+
+    // 대화방 입장 시 소켓 연결
+    initSocket(roomId);
+}
+
+function syncUI(f) {
+    const pi = document.getElementById("persona-info");
+    if (pi)
+        pi.innerHTML = `이름: <b>${f.name}</b> / 나이: <b>${f.age}세</b> / 성별: <b>${f.gender}</b><br>MBTI: <b>${f.mbti}</b>`;
+    const keys = [
+        "p_seriousness",
+        "p_friendliness",
+        "p_rationality",
+        "p_slang",
+        "v_likeability",
+        "v_erotic",
+        "v_v_mood",
+        "v_relationship",
+    ];
+    keys.forEach((k) => {
+        const el = document.getElementById(k);
+        if (el && document.activeElement !== el)
+            el.value = f[k] ?? 50;
+    });
+}
+
+function send() {
+    const input = document.getElementById("msg-input");
+    const text = input.value;
+    if (text && currentRoomId && globalSockets[currentRoomId]) {
+        const ts = new Date().toTimeString().split(" ")[0];
+        appendMsg("user", text, ts);
+
+        const f = friendsData.find(
+            (item) => item.room_id === currentRoomId,
+        );
+        if (f) {
+            if (!f.history) f.history = [];
+            f.history.push({ role: "user", content: text, ts: ts });
+        }
+        globalSockets[currentRoomId].send(text);
+        input.value = "";
+    }
+}
+
+function appendMsg(type, text, ts) {
+    const area = document.getElementById("chat-area");
+    const row = document.createElement("div");
+    row.className = `msg-row ${type}`;
+    row.innerHTML = `<div class="bubble ${type}">${text}</div><div class="msg-meta">${ts}</div>`;
+    area.appendChild(row);
+    area.scrollTop = area.scrollHeight;
+}
+
+async function commitParams() {
+    if (!currentRoomId) return;
+    const keys = [
+        "p_seriousness",
+        "p_friendliness",
+        "p_rationality",
+        "p_slang",
+        "v_likeability",
+        "v_erotic",
+        "v_v_mood",
+        "v_relationship",
+    ];
+    const params = {};
+    keys.forEach((k) => {
+        params[k] = parseInt(document.getElementById(k).value) || 0;
+    });
+    const res = await fetch(`/update-params/${currentRoomId}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(params),
+    });
+    if (res.ok) alert("이브의 상태가 변경되었습니다.");
+}
+
+async function deleteFriend(event, roomId) {
+    event.stopPropagation();
+    if (
+        confirm(
+            "이 대화방을 삭제하시겠습니까? (친구 목록에는 유지됩니다)",
+        )
+    ) {
+        const f = friendsData.find(
+            (item) => item.room_id === roomId,
+        );
+        if (f) f.history = [];
+        renderChatList();
+    }
+}
+
+function setEngineStatus(isActive) {
+    const dot = document.getElementById("engine-dot");
+    const text = document.getElementById("engine-text");
+    if (dot)
+        dot.className = isActive
+            ? "status-dot active"
+            : "status-dot";
+    if (text) text.innerText = isActive ? "Active" : "Offline";
+}
+
+async function addFriend() {
+    const btn = document.getElementById("add-friend-btn");
+    btn.innerText = "+ 친구 찾는 중...";
+    btn.disabled = true;
+    await fetch("/add-friend", { method: "POST" });
+    btn.innerText = "+ 새로운 친구 찾기";
+    btn.disabled = false;
+    loadFriends();
+}
+
+async function resetDB() {
+    if (confirm("DB를 초기화합니까?")) {
+        await fetch("/reset-db", { method: "POST" });
+        location.reload();
+    }
+}
+
+async function shutdownServer() {
+    if (confirm("서버를 종료합니까?"))
+        await fetch("/shutdown", { method: "POST" });
+}
+
+loadFriends();
+switchMobileView("list");
