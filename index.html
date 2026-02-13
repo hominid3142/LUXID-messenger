@@ -1,453 +1,707 @@
 <!doctype html>
 <html lang="ko">
-    <head>
-        <meta charset="UTF-8" />
-        <meta
-            name="viewport"
-            content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"
-        />
-        <title>PORTAL Messenger</title>
-        <meta name="apple-mobile-web-app-capable" content="yes" />
-        <meta
-            name="apple-mobile-web-app-status-bar-style"
-            content="black-translucent"
-        />
-        <meta name="mobile-web-app-capable" content="yes" />
-        <link rel="manifest" href="/manifest.json" />
 
-        <link rel="apple-touch-icon" href="https://via.placeholder.com/192" />
+<head>
+    <script>
+        if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.getRegistrations().then(function (registrations) {
+                for (let registration of registrations) {
+                    registration.unregister();
+                }
+            });
+        }
+    </script>
+    <meta charset="UTF-8" />
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+    <meta http-equiv="Pragma" content="no-cache" />
+    <meta http-equiv="Expires" content="0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <title>LUXID Messenger</title>
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <link rel="manifest" href="/manifest.json" />
 
-        <link rel="stylesheet" href="/static/style.css" />
-    </head>
-    <body class="dev-locked">
-        <div id="app-wrapper">
-            <!-- [신규] 프로필 상세 뷰 레이어 -->
+    <link rel="apple-touch-icon" href="/static/icons/icon-192.png" />
+
+    <link rel="stylesheet" href="/static/style.css" />
+</head>
+
+<body class="dev-locked">
+    <!-- [v1.5.0] 스플래시 화면 -->
+    <div id="splash-screen">
+        <div class="splash-logo">StudioMeerkat</div>
+    </div>
+
+    <div id="app-wrapper">
+        <!-- [v1.3.0] 포털 동기화(Portal Sync) 레이어 -->
+        <div id="sync-overlay" class="overlay-view" style="
+                        display: none;
+                        background: rgba(0, 0, 0, 0.7);
+                        z-index: 3000;
+                    ">
+            <div class="portal-sync-container">
+                <div class="portal-ring"></div>
+                <div class="sync-msg">
+                    <div class="sync-title">LUXID Portal Syncing...</div>
+                    <div class="sync-sub">이브의 신호를 수신 중입니다.</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- [v1.7.0] 이미지 라이트박스 (확대 보기) -->
+        <div id="lightbox-overlay" class="overlay-view"
+            style="display: none; background: rgba(0,0,0,0.95); z-index: 4000; flex-direction: column; justify-content: center;"
+            onclick="closeLightbox()">
+            <img id="lightbox-img" src="" style="max-width: 100%; max-height: 80vh; object-fit: contain;">
+            <div id="lightbox-prompt"
+                style="display: none; color: white; background: rgba(0,0,0,0.7); padding: 15px; margin: 20px; border-radius: 10px; font-size: 13px; line-height: 1.5; border: 1px solid rgba(255,255,255,0.2); max-width: 90%; word-break: break-all; text-align: left;">
+            </div>
             <div
-                id="profile-overlay"
-                class="overlay-view"
-                style="display: none"
-            >
-                <div class="profile-card">
-                    <div class="profile-close" onclick="closeProfile()">✕</div>
-                    <div id="profile-avatar" class="profile-avatar-large">
-                        ?
+                style="color: var(--text-sub); margin-top: 20px; font-size: 14px; background: rgba(255,255,255,0.1); padding: 8px 16px; border-radius: 20px;">
+                화면을 터치하여 닫기</div>
+        </div>
+
+        <!-- [v1.7.0] 나와의 관계 상세 뷰 -->
+        <div id="relationship-overlay" class="overlay-view"
+            style="display: none; z-index: 3500; align-items: flex-end;">
+            <div class="bottom-sheet" style="height: 60vh;">
+                <div class="sheet-header">
+                    <div class="sheet-title">나와의 관계 분석</div>
+                    <button class="close-sheet-btn" onclick="closeRelationshipView()">×</button>
+                </div>
+                <div class="sheet-content" style="padding: 20px;">
+                    <div id="rel-category-badge"
+                        style="display: inline-block; background: var(--blue); color: white; padding: 5px 12px; border-radius: 15px; font-size: 12px; font-weight: bold; margin-bottom: 20px;">
+                        분석 중...
                     </div>
-                    <div class="profile-info-main">
-                        <div id="profile-name" class="profile-name">이름</div>
-                        <div id="profile-mbti" class="profile-mbti-tag">
-                            MBTI
+
+                    <div class="stat-grid" style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px;">
+                        <div class="stat-box"
+                            style="background: var(--bg-secondary); padding: 15px; border-radius: 12px;">
+                            <div style="font-size: 12px; color: var(--text-sub); margin-bottom: 5px;">호감도 (Likeability)
+                            </div>
+                            <div class="progress-bar">
+                                <div id="bar-likeability" class="progress-fill" style="width: 0%"></div>
+                            </div>
+                            <div id="val-likeability" style="text-align: right; font-size: 11px; margin-top: 5px;">0%
+                            </div>
+                        </div>
+                        <div class="stat-box"
+                            style="background: var(--bg-secondary); padding: 15px; border-radius: 12px;">
+                            <div style="font-size: 12px; color: var(--text-sub); margin-bottom: 5px;">친밀도 (Intimacy)
+                            </div>
+                            <div class="progress-bar">
+                                <div id="bar-relationship" class="progress-fill"
+                                    style="width: 0%; background: #AF52DE;">
+                                </div>
+                            </div>
+                            <div id="val-relationship" style="text-align: right; font-size: 11px; margin-top: 5px;">0
+                            </div>
+                        </div>
+                        <div class="stat-box"
+                            style="background: var(--bg-secondary); padding: 15px; border-radius: 12px;">
+                            <div style="font-size: 12px; color: var(--text-sub); margin-bottom: 5px;">낭만 (Romance)</div>
+                            <div class="progress-bar">
+                                <div id="bar-erotic" class="progress-fill" style="width: 0%; background: #FF2D55;">
+                                </div>
+                            </div>
+                            <div id="val-erotic" style="text-align: right; font-size: 11px; margin-top: 5px;">0%</div>
+                        </div>
+                        <div class="stat-box"
+                            style="background: var(--bg-secondary); padding: 15px; border-radius: 12px;">
+                            <div style="font-size: 12px; color: var(--text-sub); margin-bottom: 5px;">현재 기분 (Mood)</div>
+                            <div class="progress-bar">
+                                <div id="bar-mood" class="progress-fill" style="width: 0%; background: #FF9500;"></div>
+                            </div>
+                            <div id="val-mood" style="text-align: right; font-size: 11px; margin-top: 5px;">0%</div>
                         </div>
                     </div>
+
+                    <div
+                        style="margin-top: 30px; padding: 15px; background: rgba(50, 173, 230, 0.1); border-radius: 8px; font-size: 12px; line-height: 1.6;">
+                        💡 <b>관계 분석 리포트</b><br>
+                        이브와의 대화 내용과 상호작용 빈도를 바탕으로 AI가 실시간으로 분석한 관계 지표입니다. 꾸준한 대화를 통해 관계를 발전시켜 보세요.
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- [v1.7.1] Life Details 오버레이 (관리자 전용) -->
+        <div id="life-details-overlay" class="overlay-view" style="display: none; z-index: 10000;">
+            <div class="bottom-sheet">
+                <div class="sheet-header">
+                    <div class="sheet-title">📅 Life Details</div>
+                    <button class="close-sheet-btn" onclick="closeLifeDetails()">✕</button>
+                </div>
+                <div class="sheet-content" style="max-height: 70vh; overflow-y: auto;">
+                    <!-- 현재 활동 -->
+                    <div
+                        style="margin-bottom: 20px; padding: 15px; background: var(--bg-secondary); border-radius: 12px;">
+                        <div style="font-size: 14px; font-weight: 600; margin-bottom: 8px; color: var(--text-main);">
+                            🎯 현재 활동
+                        </div>
+                        <div id="current-activity" style="font-size: 13px; color: var(--text-sub);">
+                            로딩 중...
+                        </div>
+                    </div>
+
+                    <!-- 오늘의 일정 -->
+                    <div style="margin-bottom: 20px;">
+                        <div style="font-size: 14px; font-weight: 600; margin-bottom: 10px; color: var(--text-main);">
+                            📋 오늘의 일정
+                        </div>
+                        <div id="today-schedule" style="display: flex; flex-direction: column; gap: 6px;">
+                            로딩 중...
+                        </div>
+                    </div>
+
+                    <!-- 최근 일기 -->
+                    <div>
+                        <div style="font-size: 14px; font-weight: 600; margin-bottom: 10px; color: var(--text-main);">
+                            📖 최근 일기
+                        </div>
+                        <div id="recent-diary" style="font-size: 13px; color: var(--text-sub); line-height: 1.6;">
+                            일기가 없습니다.
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 프로필 상세 뷰 레이어 - 틴더 스타일 정보 반영 -->
+        <div id="profile-overlay" class="overlay-view" style="display: none">
+            <div class="profile-card">
+                <div class="profile-close" onclick="closeProfile()">✕</div>
+                <div id="profile-avatar" class="profile-avatar-large">
+                    ?
+                </div>
+
+                <div id="profile-hook" class="profile-hook-text">
+                    "한 줄 어필"
+                </div>
+
+                <div class="profile-info-main">
+                    <div id="profile-name" class="profile-name">이름</div>
+                    <div id="profile-mbti" class="profile-mbti-tag">
+                        MBTI
+                    </div>
+                </div>
+
+                <div id="profile-bio-container" class="profile-bio-scroll">
                     <div id="profile-intro" class="profile-intro">
                         안녕하세요, LUXID에 살고 있어요.
                     </div>
-                    <div class="profile-actions">
-                        <button class="profile-btn-chat" id="profile-chat-btn">
+
+                    <div class="profile-detail-grid">
+                        <div class="p-detail-item">
+                            <span class="label">💼 직업</span>
+                            <span id="profile-job" class="val">-</span>
+                        </div>
+                        <div class="p-detail-item">
+                            <span class="label">✨ 목표</span>
+                            <span id="profile-goal" class="val">-</span>
+                        </div>
+                        <div class="p-detail-item">
+                            <span class="label">🏃 스타일</span>
+                            <span id="profile-lifestyle" class="val">-</span>
+                        </div>
+                    </div>
+
+                    <div class="profile-interests-wrap" id="profile-interests">
+                        <!-- 관심사 태그 생성부 -->
+                    </div>
+
+                    <div class="profile-tmi-box">
+                        <span class="label">💡 TMI:</span>
+                        <span id="profile-tmi">-</span>
+                    </div>
+                </div>
+
+                <div class="profile-actions" style="flex-direction: column; gap: 8px;">
+                    <div style="display: flex; gap: 8px; width: 100%;">
+                        <button class="profile-btn-chat" id="profile-chat-btn" style="flex: 1;">
                             대화하기
                         </button>
-                        <button
-                            class="profile-btn-delete"
-                            id="profile-delete-btn"
-                        >
-                            친구 삭제
+                        <button class="profile-btn-delete" id="profile-delete-btn"
+                            style="width: auto; padding: 0 15px;">
+                            🗑️
                         </button>
+                    </div>
+                    <!-- [v1.7.0] 관계 분석 버튼 추가 -->
+                    <button class="profile-btn-chat" id="profile-rel-btn"
+                        style="width: 100%; background: var(--bg-secondary); color: var(--text-main); border: 1px solid var(--border);">
+                        💞 나와의 관계
+                    </button>
+                    <!-- [v1.7.1] 관리자 전용: Life Details 버튼 -->
+                    <button class="profile-btn-chat admin-only-btn" id="profile-life-btn"
+                        style="width: 100%; background: var(--bg-secondary); color: var(--text-main); border: 1px solid var(--border); display: none;">
+                        📅 Life Details
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- LUXID 리브랜딩 및 애니메이션 구조 -->
+        <div id="auth-overlay">
+            <!-- [v1.5.0] 1단계: 시작하기 화면 -->
+            <div id="welcome-screen">
+                <div class="welcome-logo">LUXID Messenger</div>
+                <div class="welcome-sub">LUXID 여행자를 위한 메신저</div>
+                <button class="auth-btn-main start-btn" onclick="showAuthForms()">
+                    시작하기
+                </button>
+            </div>
+
+            <!-- 2단계: 로그인/회원가입 (시작하기 클릭 후 표시) -->
+            <div id="auth-form-container" style="display: none">
+                <div id="login-form" class="auth-group">
+                    <input type="text" id="login-username" class="auth-input" placeholder="아이디" />
+                    <input type="password" id="login-password" class="auth-input" placeholder="비밀번호" />
+                    <button class="auth-btn-main" onclick="handleLogin()">
+                        로그인
+                    </button>
+                    <div class="auth-link" onclick="toggleAuthMode('register')">
+                        회원가입
+                    </div>
+                </div>
+                <div id="register-form" class="auth-group" style="display: none">
+                    <input type="text" id="reg-username" class="auth-input" placeholder="아이디" />
+                    <input type="password" id="reg-password" class="auth-input" placeholder="비밀번호" />
+                    <button class="auth-btn-main" onclick="handleRegister()">
+                        가입하기
+                    </button>
+                    <div class="auth-link" onclick="toggleAuthMode('login')">
+                        로그인으로 돌아가기
                     </div>
                 </div>
             </div>
+        </div>
 
-            <!-- [수정] PORTAL 리브랜딩 및 애니메이션 구조 -->
-            <div id="auth-overlay">
-                <div id="welcome-section">
-                    <div class="welcome-logo">PORTAL</div>
-                    <div class="welcome-sub">
-                        LUXID와 당신을 연결하는 유일한 통로
-                    </div>
-                </div>
-                <div id="auth-form-container">
-                    <div id="login-form" class="auth-group">
-                        <input
-                            type="text"
-                            id="login-username"
-                            class="auth-input"
-                            placeholder="아이디"
-                        />
-                        <input
-                            type="password"
-                            id="login-password"
-                            class="auth-input"
-                            placeholder="비밀번호"
-                        />
-                        <button class="auth-btn-main" onclick="handleLogin()">
-                            로그인
-                        </button>
-                        <div
-                            class="auth-link"
-                            onclick="toggleAuthMode('register')"
-                        >
-                            회원가입
-                        </div>
-                    </div>
-                    <div
-                        id="register-form"
-                        class="auth-group"
-                        style="display: none"
-                    >
-                        <input
-                            type="text"
-                            id="reg-username"
-                            class="auth-input"
-                            placeholder="아이디"
-                        />
-                        <input
-                            type="password"
-                            id="reg-password"
-                            class="auth-input"
-                            placeholder="비밀번호"
-                        />
-                        <button
-                            class="auth-btn-main"
-                            onclick="handleRegister()"
-                        >
-                            가입하기
-                        </button>
-                        <div
-                            class="auth-link"
-                            onclick="toggleAuthMode('login')"
-                        >
-                            로그인으로 돌아가기
-                        </div>
-                    </div>
-                </div>
-            </div>
+        <!-- [v1.5.0] 프로필 작성 화면 (회원가입 후 표시) -->
+        <div id="profile-setup-overlay" style="display: none">
+            <div class="profile-setup-container">
+                <h2 class="profile-setup-title">프로필 만들기</h2>
 
-            <div id="noti-popup" onclick="handleNotiClick()">
-                <div
-                    id="noti-avatar"
-                    class="friend-avatar"
-                    style="width: 40px; height: 40px; font-size: 14px"
-                >
-                    ?
-                </div>
-                <div class="noti-content">
-                    <div class="noti-name" id="noti-name">친구 이름</div>
-                    <div class="noti-text" id="noti-text">메시지 내용...</div>
-                </div>
-            </div>
-
-            <nav class="bottom-nav">
-                <div class="nav-item active" onclick="switchMobileView('list')">
-                    <span>👤</span>
-                    <span>친구</span>
-                </div>
-                <div class="nav-item" onclick="switchMobileView('chats')">
-                    <span>💬</span>
-                    <span>대화</span>
-                </div>
-                <div
-                    id="nav-dev"
-                    class="nav-item"
-                    style="display: none"
-                    onclick="switchMobileView('dev')"
-                >
-                    ⚙️ 개발자
-                </div>
-            </nav>
-            <aside id="sidebar">
-                <div class="side-header">
-                    <div
-                        style="
-                            display: flex;
-                            align-items: center;
-                            justify-content: space-between;
-                            width: 100%;
-                        "
-                    >
-                        <div style="display: flex; align-items: center">
-                            <h1 id="tab-title">친구</h1>
-                            <div class="server-status-wrap">
-                                <div
-                                    id="engine-dot"
-                                    class="status-dot active"
-                                ></div>
-                                <span id="engine-text">Active</span>
-                            </div>
-                        </div>
-                        <div id="user-display"></div>
-                    </div>
-
-                    <div style="display: flex; gap: 8px">
-                        <button
-                            id="logout-btn"
-                            class="dev-trigger-btn"
-                            style="
-                                background: #ff3b30;
-                                color: white;
-                                border: none;
-                            "
-                            onclick="handleLogout()"
-                        >
-                            로그아웃
-                        </button>
-                    </div>
-                </div>
-
-                <!-- [수정] 탭 전환 슬라이드 애니메이션을 위한 뷰포트 구조 -->
-                <div id="tab-viewport">
-                    <div id="tab-slider">
-                        <div id="friend-tab-view" class="tab-pane">
-                            <div id="friend-list"></div>
-                            <button
-                                id="add-friend-btn"
-                                class="add-btn"
-                                onclick="addFriend()"
-                            >
-                                + 새로운 친구 찾기
-                            </button>
-                        </div>
-                        <div id="chat-tab-view" class="tab-pane">
-                            <div id="chat-list"></div>
-                        </div>
-                    </div>
-                </div>
-            </aside>
-            <main id="main-chat">
-                <header id="chat-header">
-                    <div
-                        class="mobile-back"
-                        onclick="switchMobileView('chats')"
-                    >
-                        〈
-                    </div>
-                    <div class="header-info">
-                        <div id="active-friend-name" class="name">
-                            대화방을 선택하세요
-                        </div>
-                        <div id="active-friend-status" class="status"></div>
-                    </div>
-                </header>
-                <div id="chat-area"></div>
-                <div id="input-area">
-                    <input
-                        id="msg-input"
-                        type="text"
-                        placeholder="메시지를 입력하세요..."
-                        onkeypress="if(event.keyCode==13) send()"
-                    />
-                    <button id="send-btn" onclick="send()">></button>
-                </div>
-            </main>
-            <aside id="dev-panel">
-                <div class="admin-tab-nav">
-                    <div
-                        id="atab-status"
-                        class="atab active"
-                        onclick="switchAdminTab('status')"
-                    >
-                        EVE STATUS
-                    </div>
-                    <div
-                        id="atab-users"
-                        class="atab"
-                        onclick="switchAdminTab('users')"
-                    >
-                        USER ADMIN
-                    </div>
-                </div>
-
-                <div id="admin-status-view">
-                    <div class="panel-title">Engine Control</div>
-                    <div class="engine-ctrl">
-                        <div style="display: flex; gap: 5px">
-                            <button
-                                class="shutdown-btn"
-                                style="background: #8e8e93"
-                                onclick="resetDB()"
-                            >
-                                RESET DB
-                            </button>
-                            <button
-                                class="shutdown-btn"
-                                onclick="shutdownServer()"
-                            >
-                                STOP ENGINE
-                            </button>
-                        </div>
-                    </div>
-                    <div class="panel-title">Cognitive Strategy</div>
-                    <div id="plan-info">
-                        <div style="margin-bottom: 8px">
-                            <b>[중기 전략]</b>
-                            <span id="m-plan">대기 중...</span>
-                        </div>
-                        <div>
-                            <b>[단기 전술]</b>
-                            <span id="s-plan">대기 중...</span>
-                        </div>
-                    </div>
-                    <div class="panel-title">Short-term Feeling Log</div>
-                    <div id="short-feeling-log" class="dev-log-window">
-                        분석된 느낌이 없습니다.
-                    </div>
-                    <div class="panel-title">Medium-term Record Log</div>
-                    <div id="medium-record-log" class="dev-log-window">
-                        기록된 대화 요약이 없습니다.
-                    </div>
-                    <div class="panel-title">Fact Warehouse</div>
-                    <div id="fact-warehouse-log" class="dev-log-window">
-                        저장된 팩트가 없습니다.
-                    </div>
-                    <div class="panel-title">Persona Profile</div>
-                    <div id="persona-info">
-                        대화방을 선택하면 정보가 표시됩니다.
-                    </div>
-                    <div class="param-grid">
-                        <div>
-                            <div class="grid-col-title">성향 (Dispo)</div>
-                            <div class="param-item">
-                                <label>진지함</label>
-                                <div class="param-input-wrap">
-                                    <input
-                                        type="number"
-                                        id="p_seriousness"
-                                    /><span>/10</span>
-                                </div>
-                            </div>
-                            <div class="param-item">
-                                <label>친근함</label>
-                                <div class="param-input-wrap">
-                                    <input
-                                        type="number"
-                                        id="p_friendliness"
-                                    /><span>/10</span>
-                                </div>
-                            </div>
-                            <div class="param-item">
-                                <label>상식</label>
-                                <div class="param-input-wrap">
-                                    <input
-                                        type="number"
-                                        id="p_rationality"
-                                    /><span>/10</span>
-                                </div>
-                            </div>
-                            <div class="param-item">
-                                <label>채팅체</label>
-                                <div class="param-input-wrap">
-                                    <input type="number" id="p_slang" /><span
-                                        >/10</span
-                                    >
-                                </div>
-                            </div>
-                        </div>
-                        <div>
-                            <div class="grid-col-title">상태 (Status)</div>
-                            <div class="param-item">
-                                <label>호감도</label>
-                                <div class="param-input-wrap">
-                                    <input
-                                        type="number"
-                                        id="v_likeability"
-                                    /><span>/100</span>
-                                </div>
-                            </div>
-                            <div class="param-item">
-                                <label>낭만</label>
-                                <div class="param-input-wrap">
-                                    <input type="number" id="v_erotic" /><span
-                                        >/100</span
-                                    >
-                                </div>
-                            </div>
-                            <div class="param-item">
-                                <label>기분</label>
-                                <div class="param-input-wrap">
-                                    <input type="number" id="v_v_mood" /><span
-                                        >/100</span
-                                    >
-                                </div>
-                            </div>
-                            <div class="param-item">
-                                <label>관계</label>
-                                <div class="param-input-wrap">
-                                    <input
-                                        type="number"
-                                        id="v_relationship"
-                                    /><span>±</span>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                    <button
-                        class="commit-btn"
-                        onclick="commitParams()"
-                        style="
-                            width: 100%;
-                            padding: 14px;
-                            background: var(--text-main);
-                            color: var(--accent-green);
-                            border: 1px solid var(--accent-green);
-                            border-radius: 12px;
-                            font-size: 11px;
-                            font-weight: 900;
-                            cursor: pointer;
-                            margin-bottom: 20px;
-                        "
-                    >
-                        APPLY CHANGES (COMMIT)
+                <div class="profile-image-upload">
+                    <div id="preview-avatar" class="avatar-preview"></div>
+                    <input type="file" id="profile-image-input" accept="image/*" style="display: none"
+                        onchange="previewProfileImage()" />
+                    <button class="upload-btn" onclick="document.getElementById('profile-image-input').click()">
+                        📷 사진 선택
                     </button>
                 </div>
 
-                <div id="admin-user-view" style="display: none">
-                    <div class="panel-title">Account Management</div>
-                    <div id="admin-user-list"></div>
-                </div>
+                <label
+                    style="display:block; margin-bottom:5px; font-size:13px; color:var(--text-sub); font-weight:bold;">
+                    이름 <span style="color:#ff2d55;">(필수)</span>
+                </label>
+                <input type="text" id="profile-display-name" class="profile-input" placeholder="사용할 이름을 입력하세요" />
+                <input type="number" id="profile-age" class="profile-input" placeholder="나이" />
 
-                <div id="admin-detail-view" style="display: none">
-                    <div class="admin-detail-header">
-                        <button
-                            class="shutdown-btn"
-                            onclick="switchAdminTab('users')"
-                            style="background: #8e8e93"
-                        >
-                            〈 BACK
-                        </button>
-                        <h2 id="admin-detail-title">User Stats</h2>
-                        <button class="shutdown-btn" id="admin-delete-user-btn">
-                            DELETE
-                        </button>
-                    </div>
-                    <div id="admin-detail-content"></div>
-                </div>
-            </aside>
-            <div id="dev-auth-overlay">
-                <h2>Developer Access</h2>
-                <p
-                    style="
-                        font-size: 12px;
-                        color: var(--text-sub);
-                        margin-bottom: 20px;
-                    "
-                >
-                    보안 코드를 입력하십시오.
-                </p>
-                <input
-                    type="password"
-                    id="pass-input"
-                    placeholder="••••"
-                    maxlength="8"
-                />
-                <button class="auth-btn" onclick="checkAuthPassword()">
-                    UNLOCK
-                </button>
-                <button
-                    class="auth-btn"
-                    onclick="closeAuth()"
-                    style="background: var(--text-sub); margin-top: 10px"
-                >
-                    CANCEL
+                <select id="profile-gender" class="profile-input">
+                    <option value="">성별 선택</option>
+                    <option value="male">남성</option>
+                    <option value="female">여성</option>
+                    <option value="other">기타</option>
+                </select>
+
+                <select id="profile-mbti" class="profile-input">
+                    <option value="">MBTI 선택</option>
+                    <option value="INTJ">INTJ</option>
+                    <option value="INTP">INTP</option>
+                    <option value="ENTJ">ENTJ</option>
+                    <option value="ENTP">ENTP</option>
+                    <option value="INFJ">INFJ</option>
+                    <option value="INFP">INFP</option>
+                    <option value="ENFJ">ENFJ</option>
+                    <option value="ENFP">ENFP</option>
+                    <option value="ISTJ">ISTJ</option>
+                    <option value="ISFJ">ISFJ</option>
+                    <option value="ESTJ">ESTJ</option>
+                    <option value="ESFJ">ESFJ</option>
+                    <option value="ISTP">ISTP</option>
+                    <option value="ISFP">ISFP</option>
+                    <option value="ESTP">ESTP</option>
+                    <option value="ESFP">ESFP</option>
+                </select>
+
+                <textarea id="profile-intro" class="profile-textarea" placeholder="자기소개"></textarea>
+                <input type="text" id="profile-job" class="profile-input" placeholder="직업" />
+                <input type="text" id="profile-goal" class="profile-input" placeholder="목표" />
+                <input type="text" id="profile-lifestyle" class="profile-input" placeholder="라이프스타일" />
+                <input type="text" id="profile-interests" class="profile-input" placeholder="관심사 (쉼표로 구분)" />
+                <textarea id="profile-tmi" class="profile-textarea" placeholder="TMI"></textarea>
+
+                <button class="auth-btn-main" onclick="saveUserProfile()">
+                    완료
                 </button>
             </div>
         </div>
-        <script src="/static/script.js"></script>
-    </body>
+
+        <div id="noti-popup" onclick="handleNotiClick()">
+            <div id="noti-avatar" class="friend-avatar" style="width: 40px; height: 40px; font-size: 14px">
+                ?
+            </div>
+            <div class="noti-content">
+                <div class="noti-name" id="noti-name">친구 이름</div>
+                <div class="noti-text" id="noti-text">메시지 내용...</div>
+            </div>
+        </div>
+
+        <nav class="bottom-nav">
+            <div class="nav-item active" onclick="switchMobileView('list')">
+                <span>👤</span>
+                <span>친구</span>
+            </div>
+            <div class="nav-item" onclick="switchMobileView('chats')">
+                <span>💬</span>
+                <span>대화</span>
+            </div>
+            <!-- [v1.5.0] 설정 탭 추가 -->
+            <div class="nav-item" onclick="switchMobileView('settings')">
+                <span>⚙️</span>
+                <span>설정</span>
+            </div>
+            <div id="nav-dev" class="nav-item" style="display: none" onclick="switchMobileView('dev')">
+                🔧 개발자
+            </div>
+        </nav>
+        <aside id="sidebar">
+            <div class="side-header">
+                <div style="
+                                display: flex;
+                                align-items: center;
+                                justify-content: space-between;
+                                width: 100%;
+                            ">
+                    <div style="display: flex; align-items: center">
+                        <h1 id="tab-title">친구</h1>
+                        <div class="server-status-wrap">
+                            <div id="engine-dot" class="status-dot active"></div>
+                            <span id="engine-text">Active</span>
+                        </div>
+                    </div>
+                    <div id="user-display"></div>
+                </div>
+
+                <div style="display: flex; gap: 8px">
+                    <button id="logout-btn" class="dev-trigger-btn" style="
+                                    background: #ff3b30;
+                                    color: white;
+                                    border: none;
+                                " onclick="handleLogout()">
+                        로그아웃
+                    </button>
+                </div>
+            </div>
+
+            <div id="tab-viewport">
+                <div id="tab-slider">
+                    <div id="friend-tab-view" class="tab-pane">
+                        <div id="friend-list"></div>
+                        <button id="add-friend-btn" class="add-btn" onclick="addFriend()">
+                            + 새로운 친구 찾기
+                        </button>
+                    </div>
+                    <div id="chat-tab-view" class="tab-pane">
+                        <div id="chat-list"></div>
+                    </div>
+
+                    <!-- [v1.5.0] 설정 화면 -->
+                    <div id="settings-tab-view" class="tab-pane" style="display: none">
+                        <div class="settings-section">
+                            <h3 class="settings-title">🔍 친구 찾기 설정</h3>
+                            <label class="settings-label">이브 성별 필터</label>
+                            <select id="eve-gender-filter" class="settings-select" onchange="saveSettings()">
+                                <option value="all">전체</option>
+                                <option value="female">여성</option>
+                                <option value="male">남성</option>
+                            </select>
+                        </div>
+
+                        <div class="settings-section">
+                            <h3 class="settings-title">🔔 알림 설정</h3>
+                            <label class="settings-checkbox">
+                                <input type="checkbox" id="notifications-enabled" onchange="saveSettings()" checked />
+                                <span>알림 받기</span>
+                            </label>
+                        </div>
+
+                        <div class="settings-section">
+                            <h3 class="settings-title">🎨 테마</h3>
+                            <select id="theme-select" class="settings-select" onchange="saveSettings()">
+                                <option value="dark">다크 모드</option>
+                                <option value="light">라이트 모드</option>
+                            </select>
+                        </div>
+
+                        <div class="settings-section">
+                            <h3 class="settings-title">👤 내 프로필</h3>
+                            <button class="settings-btn" onclick="editMyProfile()">프로필 수정</button>
+                        </div>
+
+                        <div class="settings-section">
+                            <h3 class="settings-title">🚪 계정</h3>
+                            <button class="settings-btn danger" onclick="handleLogout()">로그아웃</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </aside>
+        <main id="main-chat">
+            <header id="chat-header">
+                <div class="mobile-back" onclick="switchMobileView('chats')">
+                    〈
+                </div>
+                <div class="header-info">
+                    <div id="active-friend-name" class="name">
+                        대화방을 선택하세요
+                    </div>
+                    <div id="active-friend-status" class="status"></div>
+                </div>
+            </header>
+            <div id="chat-area"></div>
+            <div id="input-area">
+                <input id="msg-input" type="text" placeholder="메시지를 입력하세요..."
+                    onkeypress="if(event.keyCode==13) send()" />
+                <button id="send-btn" onclick="send()">></button>
+            </div>
+        </main>
+
+        <!-- [v1.4.2 구조 개편] 개발자 패널 -->
+        <aside id="dev-panel">
+            <!-- 상위 탭 분리 (EVV STATUS / USER ADMIN / NOTICE) -->
+            <div class="admin-tab-nav">
+                <div id="atab-status" class="atab active" onclick="switchAdminTab('status')">EVV STATUS</div>
+                <div id="atab-users" class="atab" onclick="switchAdminTab('users')">USER ADMIN</div>
+                <div id="atab-notice" class="atab" onclick="switchAdminTab('notice')">NOTICE</div>
+            </div>
+
+            <!-- 1. EVV STATUS: 브라우저 -> 제어 2단계 구조 -->
+            <div id="admin-status-view">
+                <!-- 1단계: 전체 이브 리스트 브라우저 -->
+                <div id="admin-eve-browser">
+                    <div class="panel-title">World EVE Browser</div>
+                    <div id="admin-eve-tree-list" class="admin-list-container">
+                        <!-- 스크립트에서 사용자별 이브 목록 동적 생성 -->
+                    </div>
+                    <div class="engine-ctrl" style="margin-top:20px; justify-content: space-between;">
+                        <div class="server-status-wrap" style="margin-left:0;">
+                            <div id="engine-dot-admin" class="status-dot active"></div>
+                            <span id="engine-text-admin">System Ready</span>
+                        </div>
+                        <div style="display: flex; gap: 5px">
+                            <button class="shutdown-btn" style="background: #8e8e93" onclick="resetDB()">RESET
+                                DB</button>
+                            <button class="shutdown-btn" onclick="shutdownServer()">STOP ENGINE</button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 2단계: 특정 이브 상세 제어 패널 (브라우저에서 이브 선택 시 노출) -->
+                <div id="admin-eve-control" style="display:none;">
+                    <div class="admin-detail-header">
+                        <button class="shutdown-btn" onclick="backToEveBrowser()" style="background: #8e8e93">〈 BACK TO
+                            LIST</button>
+                        <div id="admin-controlled-eve-name"
+                            style="font-size:14px; font-weight:900; color:var(--blue); flex:1; text-align:right;">
+                            EVE_NAME</div>
+                    </div>
+
+                    <!-- 서브 탭: 기존 인지 엔진 조절 기능들 -->
+                    <div class="admin-sub-nav">
+                        <div class="sub-atab active" data-sub="engine" onclick="switchAdminSubTab('engine')">ENGINE
+                        </div>
+                        <div class="sub-atab" data-sub="identity" onclick="switchAdminSubTab('identity')">IDENTITY</div>
+                        <div class="sub-atab" data-sub="prompt" onclick="switchAdminSubTab('prompt')">PROMPT</div>
+                        <div class="sub-atab" data-sub="debug" onclick="switchAdminSubTab('debug')">DEBUG</div>
+                    </div>
+
+                    <!-- ENGINE 서브 탭 -->
+                    <div id="asub-engine" class="admin-sub-content">
+                        <div class="panel-title">Cognitive Strategy</div>
+                        <div id="plan-info">
+                            <div style="margin-bottom: 8px">
+                                <b>[중기 전략]</b>
+                                <span id="m-plan">대기 중...</span>
+                            </div>
+                            <div>
+                                <b>[단기 전술]</b>
+                                <span id="s-plan">대기 중...</span>
+                            </div>
+                        </div>
+                        <div class="panel-title">Real-time Logs</div>
+                        <div class="log-grid">
+                            <div>
+                                <div class="panel-label">SHORT FEELING</div>
+                                <div id="short-feeling-log" class="dev-log-window">로그 없음</div>
+                            </div>
+                            <div>
+                                <div class="panel-label">MEDIUM RECORD</div>
+                                <div id="medium-record-log" class="dev-log-window">로그 없음</div>
+                            </div>
+                        </div>
+                        <div class="panel-title">Fact Warehouse</div>
+                        <div id="fact-warehouse-log" class="dev-log-window" style="height:80px; min-height:80px;">팩트 없음
+                        </div>
+                        <div class="panel-title">Persona Parameters</div>
+                        <div class="param-grid">
+                            <div>
+                                <div class="grid-col-title">성향 (Dispo)</div>
+                                <div class="param-item">
+                                    <label>진지함</label>
+                                    <div class="param-input-wrap"><input type="number"
+                                            id="p_seriousness" /><span>/10</span>
+                                    </div>
+                                </div>
+                                <div class="param-item">
+                                    <label>친근함</label>
+                                    <div class="param-input-wrap"><input type="number"
+                                            id="p_friendliness" /><span>/10</span></div>
+                                </div>
+                                <div class="param-item">
+                                    <label>상식</label>
+                                    <div class="param-input-wrap"><input type="number"
+                                            id="p_rationality" /><span>/10</span>
+                                    </div>
+                                </div>
+                                <div class="param-item">
+                                    <label>채팅체</label>
+                                    <div class="param-input-wrap"><input type="number" id="p_slang" /><span>/10</span>
+                                    </div>
+                                </div>
+                            </div>
+                            <div>
+                                <div class="grid-col-title">상태 (Status)</div>
+                                <div class="param-item">
+                                    <label>호감도</label>
+                                    <div class="param-input-wrap"><input type="number"
+                                            id="v_likeability" /><span>/100</span></div>
+                                </div>
+                                <div class="param-item">
+                                    <label>낭만</label>
+                                    <div class="param-input-wrap"><input type="number" id="v_erotic" /><span>/100</span>
+                                    </div>
+                                </div>
+                                <div class="param-item">
+                                    <label>기분</label>
+                                    <div class="param-input-wrap"><input type="number" id="v_v_mood" /><span>/100</span>
+                                    </div>
+                                </div>
+                                <div class="param-item">
+                                    <label>관계</label>
+                                    <div class="param-input-wrap"><input type="number"
+                                            id="v_relationship" /><span>±</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        <button class="commit-btn" onclick="commitParams()" style="margin-top:10px;">APPLY CHANGES
+                            (COMMIT)</button>
+                    </div>
+
+                    <!-- IDENTITY 서브 탭 -->
+                    <div id="asub-identity" class="admin-sub-content" style="display:none;">
+                        <div class="panel-title">Identity & Ghost Writing</div>
+                        <div class="admin-box">
+                            <div class="panel-label">MODEL SETTING</div>
+                            <select id="admin-model-select" class="admin-input-text"
+                                style="width:100%; margin-bottom:15px;">
+                                <option value="gemini-3-flash-preview">Gemini 3.0 Flash (Default)</option>
+                                <option value="gemini-2.5-flash-preview-09-2025">Gemini 2.5 Flash</option>
+                            </select>
+
+                            <div class="panel-label">GHOST WRITING (개입 발화)</div>
+                            <div style="display:flex; gap:5px; margin-bottom:15px;">
+                                <input type="text" id="ghost-msg-input" placeholder="메시지 주입..." class="admin-input-text"
+                                    style="flex:1;">
+                                <button class="commit-btn-sm" onclick="sendGhostMsg()">SEND</button>
+                            </div>
+
+                            <div class="panel-label">DAILY SCHEDULE (JSON)</div>
+                            <textarea id="edit-schedule" class="admin-textarea"
+                                style="height:100px; font-family:monospace; font-size:10px;"></textarea>
+
+                            <div class="panel-label" style="margin-top:10px;">PROFILE DETAILS (JSON)</div>
+                            <textarea id="edit-details" class="admin-textarea"
+                                style="height:100px; font-family:monospace; font-size:10px;"></textarea>
+
+                            <button class="commit-btn" onclick="saveIdentity()" style="margin-top:15px;">SAVE
+                                IDENTITY</button>
+                        </div>
+                    </div>
+
+                    <!-- PROMPT 서브 탭 -->
+                    <div id="asub-prompt" class="admin-sub-content" style="display:none;">
+                        <div class="panel-title">Strategy Prompt Overrides</div>
+                        <div class="admin-box">
+                            <select id="prompt-key-select" class="admin-input-text"
+                                style="width:100%; margin-bottom:10px;" onchange="loadPromptTemplate()">
+                                <option value="medium_thinking">Medium Thinking 전략</option>
+                                <option value="short_thinking">Short Thinking 전술</option>
+                                <option value="utterance">Utterance 발화 가이드</option>
+                            </select>
+                            <div class="panel-label">ADDITIONAL INSTRUCTION (APPENDED TO CORE)</div>
+                            <textarea id="edit-prompt-template" class="admin-textarea"
+                                style="height:300px; font-family:monospace; font-size:11px;"
+                                placeholder="엔진의 Core 프롬프트 뒤에 덧붙여질 추가 지침을 입력하세요..."></textarea>
+                            <button class="commit-btn" onclick="savePromptTemplate()" style="margin-top:10px;">UPDATE
+                                STRATEGY</button>
+                        </div>
+                    </div>
+
+                    <!-- DEBUG 서브 탭 -->
+                    <div id="asub-debug" class="admin-sub-content" style="display:none;">
+                        <div class="panel-title">Raw Engine Logs (Latest 50)</div>
+                        <div id="admin-debug-log-list"
+                            style="display:flex; flex-direction:column; gap:10px; max-height:450px; overflow-y:auto; padding:5px;">
+                            <!-- 디버그 로그 항목 삽입부 -->
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 2. USER ADMIN: 기존 사용자 목록 및 상세 조회 -->
+            <div id="admin-user-view" style="display: none">
+                <div class="panel-title">World User Statistics</div>
+                <div id="admin-user-list"></div>
+            </div>
+
+            <!-- 3. NOTICE: 전역 공지 시스템 (독립 분리) -->
+            <div id="admin-notice-view" style="display:none;">
+                <div class="panel-title">Global Broadcast System</div>
+                <div class="admin-box" style="display:flex; flex-direction:column; gap:12px;">
+                    <div class="panel-label">WRITE MESSAGE</div>
+                    <input type="text" id="global-notice-title" placeholder="공지 제목" class="admin-input-text">
+                    <textarea id="global-notice-content" placeholder="메시지 내용을 입력하세요. 모든 사용자에게 시스템 알림으로 전송됩니다."
+                        class="admin-textarea" style="height:200px;"></textarea>
+                    <button class="commit-btn" onclick="sendGlobalNotice()">BROADCAST TO ALL ROOMS</button>
+                </div>
+            </div>
+
+            <!-- 상세 뷰 (USER ADMIN에서 진입 시 사용) -->
+            <div id="admin-detail-view" style="display: none">
+                <div class="admin-detail-header">
+                    <button class="shutdown-btn" onclick="switchAdminTab('users')" style="background: #8e8e93">〈 BACK TO
+                        USERS</button>
+                    <h2 id="admin-detail-title" style="font-size:14px; font-weight:800;">User Stats</h2>
+                    <button class="shutdown-btn" id="admin-delete-user-btn">DELETE</button>
+                </div>
+                <div id="admin-detail-content"></div>
+            </div>
+        </aside>
+
+        <div id="dev-auth-overlay">
+            <h2>Developer Access</h2>
+            <p style="font-size: 12px; color: var(--text-sub); margin-bottom: 20px;">보안 코드를 입력하십시오.</p>
+            <input type="password" id="pass-input" placeholder="••••" maxlength="8" />
+            <button class="auth-btn" onclick="checkAuthPassword()">UNLOCK</button>
+            <button class="auth-btn" onclick="closeAuth()"
+                style="background: var(--text-sub); margin-top: 10px">CANCEL</button>
+        </div>
+    </div>
+    <script src="/static/script.js"></script>
+</body>
+
 </html>

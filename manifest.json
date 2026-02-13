@@ -1,20 +1,22 @@
 {
-  "name": "EVE Messenger",
-  "short_name": "EVE",
+  "name": "LUXID-Messenger",
+  "short_name": "LUXID",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#ffffff",
   "theme_color": "#007aff",
   "icons": [
     {
-      "src": "https://via.placeholder.com/192",
+      "src": "/static/icons/icon-192.png",
       "sizes": "192x192",
-      "type": "image/png"
+      "type": "image/png",
+      "purpose": "any maskable"
     },
     {
-      "src": "https://via.placeholder.com/512",
+      "src": "/static/icons/icon-512.png",
       "sizes": "512x512",
-      "type": "image/png"
+      "type": "image/png",
+      "purpose": "any maskable"
     }
   ]
 }
