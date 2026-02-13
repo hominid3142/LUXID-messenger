@@ -18,8 +18,9 @@ import fal_client
 from database import engine, SessionLocal, Base
 from models import Persona, ChatRoom, User, PromptTemplate, SystemNotice
 from memory import KST, volatile_memory, get_volatile_state, get_date_info
-from engine import run_medium_thinking, run_short_thinking, run_utterance, generate_eve_visuals, generate_eve_nickname, client, MODEL_ID, debug_log_buffer
-from auth_utils import verify_password, get_password_hash, create_access_token, decode_access_token
+from engine import run_medium_thinking, run_short_thinking, run_utterance, generate_eve_visuals, generate_eve_nickname, client, MODEL_ID, debug_log_buffer, sync_eve_life
+from auth_utils import verify_password, get_password_hash, create_access_token, decode_access_token, update_user_tokens
+from scheduler import AEScheduler
 
 class ProfileUpdate(BaseModel):
     display_name: str
@@ -57,16 +58,8 @@ async def add_no_cache_header(request: Request, call_next):
     return response
 
 
-# [v1.2.0] 토큰 사용량 업데이트 함수
-def update_user_tokens(db: Session, user_id: int, tokens_used: int):
-    try:
-        user = db.query(User).filter(User.id == user_id).first()
-        if user:
-            user.total_tokens += tokens_used
-            db.commit()
-    except Exception as e:
-        print(f"Token Update Error: {e}")
-        db.rollback()
+# [v1.2.0] 토큰 사용량 업데이트 함수 (auth_utils로 이동됨)
+# def update_user_tokens(db: Session, user_id: int, tokens_used: int): ...
 
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
@@ -131,6 +124,10 @@ async def startup_initialization():
         print(">> STARTUP: Admin Created.")
     else:
         print(">> STARTUP: Admin Exists.")
+
+    # [v2.0.0] 스케줄러 시작 (매일 자정 자동 업데이트)
+    scheduler = AEScheduler()
+    scheduler.start()
 
     # [v1.4.2] PromptTemplate 테이블은 비워두어 engine.py의 core_prompt가 우선 적용되게 함.
     print(">> STARTUP: Closing DB session...")
@@ -638,80 +635,10 @@ async def generate_eve_life_details(p_dict):
         return None, 0
 
 
-async def sync_eve_life(room_id, db: Session):
-    """이브의 부재 기간을 시뮬레이션합니다. (일기 작성 + 새 일과 생성)"""
-    room = db.query(ChatRoom).filter(ChatRoom.id == room_id).first()
-    if not room or not room.persona: return
 
-    p = room.persona
-    v_state = get_volatile_state(room_id, room)
-
-    last_date = p.last_schedule_date.replace(
-        tzinfo=KST) if p.last_schedule_date else datetime.now(KST) - timedelta(
-            days=1)
-    now = datetime.now(KST)
-
-    if last_date.date() == now.date():
-        return
-
-    medium_logs = v_state.get('medium_term_logs', [])
-    old_schedule = p.daily_schedule
-
-    date_info_now = get_date_info(now)
-    date_info_yesterday = get_date_info(last_date)
-
-    # [v1.4.2 복구] 당신의 정교한 프롬프트 전문 복구
-    prompt = f"""
-    당신은 '{p.name}'입니다. 
-    어제의 날짜: {date_info_yesterday['full_str']}
-    오늘의 날짜: {date_info_now['full_str']}
-
-    [어제의 일과] {json.dumps(old_schedule)}
-    [어제의 사건/생각들] {json.dumps(medium_logs[-5:] if medium_logs else "특별한 일 없음")}
-
-    [임무]
-    1. 어제의 일기: 어제의 일과와 사건들을 섞어서 1인칭 시점으로 짧은 일기를 작성하세요. (3문장 이내)
-    2. 오늘의 일과: 오늘({date_info_now['full_str']})을 위한 간단한 일과를 요일과 공휴일 여부를 고려하여 작성하세요.
-       - 기상 시간 (wake_time): 07:00~09:00 사이
-       - 오늘 할 일 (daily_tasks): 1~3개의 주요 활동 (반드시 'HH:MM 활동내용' 형식으로 시간을 포함할 것)
-       - 취침 시간 (sleep_time): 22:00~24:00 사이
-
-    JSON 응답:
-    {{
-        "diary_entry": "일기 내용",
-        "new_schedule": {{
-            "wake_time": "07:30",
-            "daily_tasks": ["10:00 활동1", "14:00 활동2", "18:00 활동3"],
-            "sleep_time": "23:00"
-        }}
-    }}
-    """
-    try:
-        res = await client.aio.models.generate_content(
-            model=MODEL_ID,
-            contents=prompt,
-            config={'response_mime_type': 'application/json'})
-        data = json.loads(re.search(r'\{.*\}', res.text, re.DOTALL).group())
-
-        p.daily_schedule = data['new_schedule']
-        p.last_schedule_date = now
-
-        current_diaries = list(room.diaries) if room.diaries else []
-        current_diaries.append({
-            "date": last_date.strftime('%Y-%m-%d'),
-            "content": data['diary_entry']
-        })
-        room.diaries = current_diaries[-30:]
-
-        db.commit()
-
-        v_state[
-            'medium_term_diagnosis'] = f"방금 {last_date.date()}의 일기를 쓰고 오늘 일과를 세웠어."
-        update_user_tokens(db, room.owner_id,
-                           res.usage_metadata.total_token_count)
-
-    except Exception as e:
-        print(f"Sync Life Error: {e}")
+# ---------------------------------------------------------
+# [v1.9.3] sync_eve_life 함수는 engine.py로 이동되었습니다.
+# ---------------------------------------------------------
 
 
 # ---------------------------------------------------------
