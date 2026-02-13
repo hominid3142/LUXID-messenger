@@ -25,7 +25,8 @@ async function checkAuth() {
     } else {
         authOverlay.style.display = "none";
         updateUIByAuth();
-        loadFriends();
+        loadFriends(); // 데이터 로드
+        switchMobileView('feed'); // [v2.0.0] 시작 시 피드 화면
     }
 }
 
@@ -178,37 +179,53 @@ function switchMobileView(view) {
     const title = document.getElementById("tab-title");
     const slider = document.getElementById("tab-slider");
 
-    // [v1.5.0] 모든 탭 숨기기
+    // [v2.0.0] Slider Logic Fix: display:none 제거하고 transform만 사용
+    // 모든 탭을 flex로 유지해야 슬라이더 좌표계가 유지됨
+    const feedTab = document.getElementById("feed-tab-view");
     const friendTab = document.getElementById("friend-tab-view");
     const chatTab = document.getElementById("chat-tab-view");
     const settingsTab = document.getElementById("settings-tab-view");
-    if (friendTab) friendTab.style.display = "none";
-    if (chatTab) chatTab.style.display = "none";
-    if (settingsTab) settingsTab.style.display = "none";
+    const mapTab = document.getElementById("map-tab-view"); // [NEW]
 
-    if (view === "list") {
+    // 초기화 (혹시 inline style로 숨겨져 있을 경우 복구)
+    if (feedTab) feedTab.style.display = "flex";
+    if (friendTab) friendTab.style.display = "flex";
+    if (chatTab) chatTab.style.display = "flex";
+    if (settingsTab) settingsTab.style.display = "flex";
+    if (mapTab) mapTab.style.display = "flex";
+
+    // 탭 슬라이드 계산 (5개 탭 -> 500% width)
+    // 0%, -20%, -40%, -60%, -80%
+    if (view === "feed") {
         if (slider) slider.style.transform = "translateX(0%)";
-        if (friendTab) friendTab.style.display = "flex";
-        title.innerText = "친구";
+        title.innerText = "LUXID";
         navs[0].classList.add("active");
+        loadFeed();
+    } else if (view === "map") { // [NEW] 맵 탭
+        if (slider) slider.style.transform = "translateX(-20%)";
+        title.innerText = "WORLD";
+        navs[1].classList.add("active");
+        loadMap();
+    } else if (view === "list") {
+        if (slider) slider.style.transform = "translateX(-40%)";
+        title.innerText = "친구";
+        navs[2].classList.add("active");
         renderFriendList();
     } else if (view === "chats") {
-        if (slider) slider.style.transform = "translateX(-50%)";
-        if (chatTab) chatTab.style.display = "flex";
+        if (slider) slider.style.transform = "translateX(-60%)";
         title.innerText = "대화";
-        navs[1].classList.add("active");
+        navs[3].classList.add("active");
         renderChatList();
     } else if (view === "settings") {
-        // [v1.5.0] 설정 탭
-        if (settingsTab) settingsTab.style.display = "flex";
+        if (slider) slider.style.transform = "translateX(-80%)";
         title.innerText = "설정";
-        navs[2].classList.add("active");
+        navs[4].classList.add("active");
         loadSettings();
     } else if (view === "chat") {
         document.body.classList.add("is-chatting");
     } else if (view === "dev") {
         document.body.classList.add("is-dev");
-        if (navs[3]) navs[3].classList.add("active");
+        if (navs[4]) navs[4].classList.add("active");
         switchAdminTab("status");
     }
 }
@@ -257,22 +274,25 @@ function switchAdminSubTab(sub) {
     if (sub === "debug") loadDebugLogs();
 }
 
-// [v1.4.2 신규] 모든 이브 목록(World EVE Browser) 로드
+// [v2.0.0] 모든 이브 목록(World EVE Browser) 로드 - 이브 중심
 async function loadAdminEves() {
     const res = await fetch("/admin/eves", {
         headers: { Authorization: `Bearer ${accessToken}` }
     });
     if (res.ok) {
-        const tree = await res.json();
-        const list = document.getElementById("admin-eve-tree-list");
-        list.innerHTML = tree.map(user => `
+        const listData = await res.json();
+        const listContainer = document.getElementById("admin-eve-tree-list");
+
+        listContainer.innerHTML = listData.map(eve => `
             <div class="user-group-card">
-                <div class="user-group-header">${user.username} (${user.rooms.length})</div>
-                ${user.rooms.map(room => `
-                    <div class="eve-mini-item" onclick="inspectEve(${room.room_id}, '${room.persona_name}')">
+                <div class="user-group-header" style="display:flex; align-items:center; gap:10px;">
+                    <img src="${eve.persona_image || ''}" style="width:24px; height:24px; border-radius:50%; background:#ddd;">
+                    <span>${eve.persona_name} (${eve.rooms.length} users)</span>
+                </div>
+                ${eve.rooms.map(room => `
+                    <div class="eve-mini-item" onclick="inspectEve(${room.room_id}, '${eve.persona_name} - ${room.user_name}')">
                         <div class="info">
-                            <span class="name">${room.persona_name}</span>
-                            <span class="mbti">${room.mbti}</span>
+                            <span class="name">User: ${room.user_name}</span>
                         </div>
                         <div class="indicator ${room.is_active ? '' : 'offline'}">
                             ${room.is_active ? '● LIVE' : '○ IDLE'}
@@ -1138,6 +1158,10 @@ function updateUIByAuth() {
     const navDev = document.getElementById("nav-dev");
     if (accessToken) {
         if (userDisplay) userDisplay.innerText = currentUsername || "";
+
+        // [v2.0.0] 로그인 성공 시 서버 상태 Active로 표시
+        setEngineStatus(true);
+
         if (isAdmin) {
             document.body.classList.add("dev-unlocked");
             if (navDev) navDev.style.display = "flex";
@@ -1407,6 +1431,213 @@ async function editMyProfile() {
     }
 }
 
+// [v2.0.0] Social Feed Logic
+async function loadFeed() {
+    try {
+        const res = await fetch("/api/feed", {
+            headers: { Authorization: `Bearer ${accessToken}` }
+        });
+        if (res.ok) {
+            const posts = await res.json();
+            if (posts.length === 0) {
+                await seedFeed();
+            } else {
+                renderFeed(posts);
+            }
+        }
+    } catch (e) {
+        console.error("Feed load failed", e);
+    }
+}
+
+async function seedFeed() {
+    try {
+        const res = await fetch("/api/feed/seed", { method: "POST", headers: { Authorization: `Bearer ${accessToken}` } });
+        if (res.ok) loadFeed();
+    } catch (e) { console.error("Feed seed failed", e); }
+}
+
+function renderFeed(posts) {
+    const container = document.getElementById("feed-list");
+    if (!container) return;
+
+    container.innerHTML = posts.map(post => {
+        // 이미지 HTML
+        const imageHtml = post.image_url
+            ? `<div class="feed-image-container"><img src="${post.image_url}" class="feed-image" loading="lazy" onclick="openLightbox('${post.image_url}')"></div>`
+            : "";
+
+        // 댓글 HTML (숨김 처리)
+        const commentsHtml = post.comments.map(c => `
+            <div class="feed-comment-item">
+                <div class="comment-author-row">
+                    <img src="${c.author_image || 'https://via.placeholder.com/20'}" class="comment-avatar">
+                    <span class="comment-username">${c.author_name}</span>
+                    <span class="comment-time">${c.created_at.split(" ")[1] || ""}</span>
+                </div>
+                <div class="comment-content">${c.content}</div>
+            </div>
+        `).join("");
+
+        return `
+        <article class="feed-card">
+            <!-- 좌측: 아바타 -->
+            <div class="feed-avatar-col" onclick="openProfile(${post.room_id})">
+                <div class="feed-avatar">
+                   <img src="${post.author_image || 'https://via.placeholder.com/32'}" onerror="this.style.display='none'">
+                   ${!post.author_image ? post.author_name[0] : ''}
+                </div>
+            </div>
+            
+            <!-- 우측: 콘텐츠 -->
+            <div class="feed-content-col">
+                <div class="feed-header-row">
+                    <div class="feed-username" onclick="openProfile(${post.room_id})">${post.author_name}</div>
+                    <div class="feed-time">${post.created_at}</div>
+                </div>
+                
+                <div class="feed-text">${post.content}</div>
+                
+                ${imageHtml}
+                
+                <div class="feed-actions">
+                    <button class="feed-action-btn">
+                        <span>❤️</span> 
+                        <span class="feed-count" style="${post.like_count > 0 ? '' : 'display:none'}">${post.like_count}</span>
+                    </button>
+                    <button class="feed-action-btn" onclick="toggleComments(${post.id})">
+                        <span>💬</span>
+                        <span class="feed-count" style="${post.comments.length > 0 ? '' : 'display:none'}">${post.comments.length}</span>
+                    </button>
+                    <button class="feed-action-btn" onclick="confirmDM(${post.room_id})">
+                        <span>💌</span>
+                    </button>
+                </div>
+
+                <!-- 댓글 영역 (토글) -->
+                <div id="comments-${post.id}" class="feed-comments-section" style="display: none;">
+                    ${commentsHtml}
+                </div>
+            </div>
+        </article>`;
+    }).join("");
+}
+
+// [v2.0.0] 댓글 토글
+function toggleComments(postId) {
+    const el = document.getElementById(`comments-${postId}`);
+    if (el) {
+        el.style.display = el.style.display === "none" ? "block" : "none";
+    }
+}
+
+// [v2.0.0] World Map Logic
+async function loadMap() {
+    try {
+        const res = await fetch("/api/map", {
+            headers: { Authorization: `Bearer ${accessToken}` }
+        });
+        if (res.ok) {
+            const data = await res.json();
+            renderMap(data);
+        }
+    } catch (e) {
+        console.error("Map Load Error:", e);
+    }
+}
+
+function renderMap(data) {
+    const grid = document.getElementById("world-map-grid");
+    if (!grid) return;
+
+    // District 순서 고정 (UI 배치)
+    const districtOrder = ["루미나 시티", "네온 디스트릭트", "세렌 밸리", "에코 베이", "더 하이브"];
+
+    // 데이터 매핑
+    grid.innerHTML = districtOrder.map(dName => {
+        const district = data.districts.find(d => d.name === dName);
+        if (!district) return "";
+
+        // 이 구역에 있는 내 친구들 찾기
+        const friendsHere = data.friends.filter(f => f.district === dName);
+
+        // 핫플레이스 태그 (인구 많은 순 2개)
+        const hotSpots = district.locations
+            .sort((a, b) => b.pop - a.pop)
+            .slice(0, 3)
+            .map(loc => `
+                <div class="location-tag ${loc.pop > 5 ? 'hot' : ''}">
+                    ${loc.name} <span style="opacity:0.6; margin-left:4px;">${loc.pop}</span>
+                </div>
+            `).join("");
+
+        const friendsHtml = friendsHere.length > 0 ? `
+            <div class="map-friends-row">
+                ${friendsHere.map(f => `
+                     <img src="${f.image || 'https://via.placeholder.com/28'}" 
+                          class="map-friend-avatar" 
+                          title="${f.name} - ${f.location_name}"
+                          onclick="openProfile(${f.room_id}); event.stopPropagation();">
+                `).join("")}
+            </div>
+        ` : "";
+
+        return `
+            <div class="district-card" data-theme="${dName}" onclick="alert('${dName} 상세 정보 준비 중...')">
+                <div class="district-header">
+                    <div class="district-info">
+                        <div class="district-name">${dName}</div>
+                        <div style="font-size:11px; opacity:0.7; margin-top:2px;">
+                            ${getDistrictDesc(dName)}
+                        </div>
+                    </div>
+                    <div class="district-pop">👥 ${district.total_pop}</div>
+                </div>
+                
+                <div class="location-list">
+                    ${hotSpots}
+                </div>
+                
+                ${friendsHtml}
+            </div>
+        `;
+    }).join("");
+}
+
+function getDistrictDesc(name) {
+    const desc = {
+        "루미나 시티": "비즈니스 & 트렌드",
+        "세렌 밸리": "자연 & 힐링",
+        "에코 베이": "문화 & 예술",
+        "더 하이브": "평온한 거주 구역",
+        "네온 디스트릭트": "나이트라이프 & 파티"
+    };
+    return desc[name] || "";
+}
+
+// [v2.0.0] DM 확인 모달 로직
+let pendingDmRoomId = null;
+
+function confirmDM(roomId) {
+    pendingDmRoomId = roomId;
+    const overlay = document.getElementById("dm-confirm-overlay");
+    const confirmBtn = document.getElementById("confirm-dm-btn");
+
+    if (confirmBtn) {
+        confirmBtn.onclick = () => {
+            closeConfirmDM();
+            joinRoom(pendingDmRoomId);
+        };
+    }
+
+    if (overlay) overlay.style.display = "flex";
+}
+
+function closeConfirmDM() {
+    pendingDmRoomId = null;
+    const overlay = document.getElementById("dm-confirm-overlay");
+    if (overlay) overlay.style.display = "none";
+}
+
 // 초기 실행
 checkAuth();
-switchMobileView("list");
