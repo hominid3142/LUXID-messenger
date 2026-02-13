@@ -16,7 +16,7 @@ import fal_client
 
 # 모듈화된 파일들에서 기능 임포트
 from database import engine, SessionLocal, Base
-from models import Persona, ChatRoom, User, PromptTemplate, SystemNotice
+from models import Persona, ChatRoom, User, PromptTemplate, SystemNotice, FeedPost, FeedComment, MapLocation
 from memory import KST, volatile_memory, get_volatile_state, get_date_info
 from engine import run_medium_thinking, run_short_thinking, run_utterance, generate_eve_visuals, generate_eve_nickname, client, MODEL_ID, debug_log_buffer, sync_eve_life
 from auth_utils import verify_password, get_password_hash, create_access_token, decode_access_token, update_user_tokens
@@ -103,6 +103,48 @@ def update_user_tokens(db: Session, user_id: int, token_count: int):
         db.commit()
 
 
+# [v2.0.0] World Map Seeding
+def seed_world_map(db: Session):
+    try:
+        if db.query(MapLocation).count() > 0:
+            return
+
+        locations = [
+            # 1. 루미나 시티 (Lumina City - 중심부)
+            {"district": "루미나 시티", "name": "루미나 광장", "category": "놀기", "description": "중심부 광장, 대형 분수대"},
+            {"district": "루미나 시티", "name": "코어 타워", "category": "업무", "description": "대기업 오피스, 마천루"},
+            {"district": "루미나 시티", "name": "스타필드 몰", "category": "놀기", "description": "고급 쇼핑몰, 영화관"},
+            {"district": "루미나 시티", "name": "빈즈 앤 바이트", "category": "업무", "description": "유명 프랜차이즈 카페"},
+            
+            # 2. 세렌 밸리 (Seren Valley - 자연)
+            {"district": "세렌 밸리", "name": "세렌 공원", "category": "휴식", "description": "조깅 트랙, 피크닉"},
+            {"district": "세렌 밸리", "name": "보태니컬 가든", "category": "휴식", "description": "희귀 식물, 독서"},
+            {"district": "세렌 밸리", "name": "리버사이드 산책로", "category": "휴식", "description": "강변 산책로, 데이트 코스"},
+
+            # 3. 에코 베이 (Echo Bay - 문화)
+            {"district": "에코 베이", "name": "더 갤러리", "category": "놀기", "description": "현대 미술 전시"},
+            {"district": "에코 베이", "name": "바이닐 펍", "category": "놀기", "description": "아날로그 음악 바"},
+            {"district": "에코 베이", "name": "씨사이드 데크", "category": "휴식", "description": "바다 전망대, 버스킹"},
+            {"district": "에코 베이", "name": "블루노트 재즈 클럽", "category": "놀기", "description": "저녁 라이브 공연"},
+
+            # 4. 더 하이브 (The Hive - 거주지)
+            {"district": "더 하이브", "name": "쉐어 하우스", "category": "집", "description": "이브 거주지"},
+            {"district": "더 하이브", "name": "24시 편의점", "category": "놀기", "description": "심야 간식, 편의점"},
+            {"district": "더 하이브", "name": "커뮤니티 센터", "category": "휴식", "description": "헬스장, 세탁실"},
+
+            # 5. 네온 디스트릭트 (Neon District - 밤문화)
+            {"district": "네온 디스트릭트", "name": "클럽 버텍스", "category": "놀기", "description": "댄스 플로어"},
+            {"district": "네온 디스트릭트", "name": "루프탑 바 2077", "category": "놀기", "description": "칵테일, 시티뷰"},
+            {"district": "네온 디스트릭트", "name": "게임 아케이드", "category": "놀기", "description": "레트로 게임, 다트"}
+        ]
+
+        print(">> STARTUP: Seeding Map Locations...")
+        for loc in locations:
+            db.add(MapLocation(**loc))
+        db.commit()
+    except Exception as e:
+        print(f"Error seeding world map: {e}")
+
 # 초기 관리자 생성 (v1.4.2: 조잡한 시딩 제거 및 원본 체계 보호)
 @app.on_event("startup")
 async def startup_initialization():
@@ -130,6 +172,7 @@ async def startup_initialization():
     scheduler.start()
 
     # [v1.4.2] PromptTemplate 테이블은 비워두어 engine.py의 core_prompt가 우선 적용되게 함.
+    seed_world_map(db) # [v2.0.0] 맵 데이터 시딩
     print(">> STARTUP: Closing DB session...")
     db.close()
     print(">> STARTUP: Initialization Complete.")
@@ -138,6 +181,125 @@ async def startup_initialization():
 # ---------------------------------------------------------
 # 1. 계정 관련 API (Auth)
 # ---------------------------------------------------------
+
+# [v2.0.0] 피드 API
+@app.get("/api/feed")
+async def get_feed(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    if not current_user: raise HTTPException(status_code=401)
+    
+    # 최신글 50개 조회
+    posts = db.query(FeedPost).order_by(FeedPost.created_at.desc()).limit(50).all()
+    
+    feed_data = []
+    for post in posts:
+        # 작성자(이브) 정보
+        author = post.persona
+        
+        # 현재 유저와의 채팅방 ID 찾기 (DM 이동용)
+        room = db.query(ChatRoom).filter(
+            ChatRoom.owner_id == current_user.id, 
+            ChatRoom.persona_id == author.id
+        ).first()
+        my_room_id = room.id if room else None
+
+        # 댓글 목록
+        comments = []
+        for c in post.comments:
+            c_author_name = "Unknown"
+            c_author_img = None
+            if c.persona:
+                c_author_name = c.persona.name
+                c_author_img = c.persona.profile_image_url
+            elif c.user:
+                c_author_name = c.user.display_name or c.user.username
+                c_author_img = c.user.profile_image_url
+                
+            comments.append({
+                "id": c.id,
+                "content": c.content,
+                "author_name": c_author_name,
+                "author_image": c_author_img,
+                "created_at": c.created_at.strftime("%Y-%m-%d %H:%M")
+            })
+
+        # 날짜 포맷 (MM.DD (요일))
+        days = ["월", "화", "수", "목", "금", "토", "일"]
+        dt = post.created_at
+        day_str = days[dt.weekday()]
+        date_str = f"{dt.month:02d}.{dt.day:02d} ({day_str})"
+
+        feed_data.append({
+            "id": post.id,
+            "author_name": author.name,
+            "author_image": author.profile_image_url,
+            "author_id": author.id,
+            "room_id": my_room_id, # 클릭 시 이동할 채팅방 ID
+            "content": post.content,
+            "image_url": post.image_url,
+            "like_count": post.like_count,
+            "created_at": date_str, # MM.DD (요일)
+            "comments": comments
+        })
+        
+    return feed_data
+
+@app.post("/api/feed/seed")
+async def seed_feed(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """테스트용 샘플 피드 생성"""
+    if not current_user: raise HTTPException(status_code=401)
+    
+    # 기존 이브 중 랜덤 선택
+    personas = db.query(Persona).all()
+    if not personas: return {"status": "no_personas"}
+    
+    sample_texts = [
+        "오늘 날씨가 너무 좋아서 산책 나왔어! 🌿 다들 점심은 뭐 먹었어?",
+        "새로 산 책을 읽고 있는데 너무 재밌네. 추천해줄 사람? 📚",
+        "우울할 땐 역시 달달한 게 최고지. 초콜릿 케이크 먹는 중! 🍰",
+        "주말에 뭐할지 고민이다... 영화 볼까?",
+        "오늘따라 기분이 묘해. 꿈자리가 뒤숭숭했나 봐."
+    ]
+    
+    # 3개 생성
+    for _ in range(3):
+        p = random.choice(personas)
+        post = FeedPost(
+            persona_id=p.id,
+            content=random.choice(sample_texts),
+            image_url="https://placehold.co/600x400/222/888?text=Snapshot", # Placeholder
+            like_count=random.randint(5, 100),
+            created_at=datetime.now(KST) - timedelta(minutes=random.randint(10, 300))
+        )
+        db.add(post)
+        db.commit()
+        
+        # 댓글 생성 (2~4개)
+        num_comments = random.randint(2, 4)
+        for _ in range(num_comments):
+            other_p = random.choice(personas)
+            # 본인이 쓴 댓글도 가능
+            
+            comment_texts = [
+                "완전 공감해! ㅋㅋ",
+                "오 진짜? 나도 가보고 싶다.",
+                "사진 분위기 너무 좋은데?",
+                "요즘 너무 바빠서 얼굴 보기도 힘들네 ㅠㅠ",
+                "다음에 같이 가자!",
+                "이거 어디서 산 거야? 정보 좀 ㅎㅎ",
+                "ㅋㅋㅋㅋㅋ 웃겨",
+                "힘내! 🔥"
+            ]
+
+            comment = FeedComment(
+                post_id=post.id,
+                persona_id=other_p.id,
+                content=random.choice(comment_texts),
+                created_at=datetime.now(KST) - timedelta(minutes=random.randint(1, 60))
+            )
+            db.add(comment)
+            db.commit()
+            
+    return {"status": "seeded"}
 
 
 @app.post("/register")
@@ -153,6 +315,25 @@ async def register(data: dict = Body(...), db: Session = Depends(get_db)):
         created_at=datetime.utcnow(),
         last_active=datetime.utcnow())
     db.add(new_user)
+    db.commit()
+    db.refresh(new_user)
+
+    # [v2.0.0] Shared Universe: 새로 가입한 유저에게 기존의 모든 이브(Persona)를 친구로 추가
+    existing_personas = db.query(Persona).all()
+    for p in existing_personas:
+        # 이미 채팅방이 있는지 확인 (중복 방지)
+        exists = db.query(ChatRoom).filter(ChatRoom.owner_id == new_user.id, ChatRoom.persona_id == p.id).first()
+        if not exists:
+            new_room = ChatRoom(
+                owner_id=new_user.id,
+                persona_id=p.id,
+                v_likeability=random.randint(20, 100),
+                v_erotic=random.randint(10, 40),
+                v_v_mood=random.randint(20, 100),
+                v_relationship=random.randint(20, 100)
+            )
+            db.add(new_room)
+    
     db.commit()
     return {"status": "success"}
 
@@ -340,30 +521,37 @@ async def admin_get_users(current_user: User = Depends(get_current_user),
     return user_list
 
 
-# [v1.4.2 핵심] 관리자: 모든 이브 목록 조회 (트리 구조)
+# [v2.0.0 Refactor] 관리자: 이브 중심 목록 조회 (세계관 내 이브 목록)
 @app.get("/admin/eves")
 async def admin_get_all_eves(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     if not current_user or not current_user.is_admin:
         raise HTTPException(status_code=403)
 
-    users = db.query(User).all()
-    tree_data = []
-    for u in users:
-        rooms = db.query(ChatRoom).filter(ChatRoom.owner_id == u.id).all()
-        user_rooms = []
+    personas = db.query(Persona).all()
+    eve_list = []
+    
+    for p in personas:
+        # 해당 이브와 연결된 채팅방들 조회
+        rooms = db.query(ChatRoom).filter(ChatRoom.persona_id == p.id).all()
+        room_data = []
         for r in rooms:
-            user_rooms.append({
+            owner = db.query(User).filter(User.id == r.owner_id).first()
+            username = owner.username if owner else "Unknown"
+            
+            room_data.append({
                 "room_id": r.id,
-                "persona_name": r.persona.name,
-                "mbti": r.persona.mbti,
+                "user_name": username, # 누구와의 채팅방인지
                 "is_active": r.id in volatile_memory
             })
-        tree_data.append({
-            "user_id": u.id,
-            "username": u.username,
-            "rooms": user_rooms
+            
+        eve_list.append({
+            "persona_id": p.id,
+            "persona_name": p.name,
+            "persona_image": p.profile_image_url,
+            "rooms": room_data
         })
-    return tree_data
+        
+    return eve_list
 
 
 @app.get("/admin/user/{user_id}/detail")
@@ -1070,36 +1258,48 @@ async def add_friend(current_user: User = Depends(get_current_user),
     # 토큰 사용량 업데이트 (라이프 생성 + 비주얼 생성)
     update_user_tokens(db, current_user.id, life_tokens + visual_tokens)
 
-    room = ChatRoom(owner_id=current_user.id,
-                    persona_id=p.id,
-                    v_likeability=random.randint(20, 100),
-                    v_erotic=random.randint(10, 40),
-                    v_v_mood=random.randint(20, 100),
-                    v_relationship=random.randint(20, 100))
-    db.add(room)
-    db.commit()
-    db.refresh(room)
+    # [v2.0.0] Shared Universe: 생성된 이브를 모든 유저의 채팅방에 추가
+    all_users = db.query(User).all()
+    current_room_id = None # 생성자에게 리턴할 room_id
 
-    v_state = get_volatile_state(room.id, room)
-    
-    # 중기 사고용 p_dict 재구성
-    final_p_dict = {
-        "name": p.name,
-        "age": p.age,
-        "gender": p.gender,
-        "mbti": p.mbti,
-        "p_seriousness": p.p_seriousness,
-        "p_friendliness": p.p_friendliness,
-        "p_rationality": p.p_rationality,
-        "p_slang": p_slang,
-        "profile_details": p.profile_details,
-        "daily_schedule": p.daily_schedule
-    }
-    
-    _, tokens = await run_medium_thinking(v_state, final_p_dict, room.id)
-    update_user_tokens(db, current_user.id, tokens)
-    room.fact_warehouse = v_state['fact_warehouse']
-    db.commit()
+    for u in all_users:
+        room = ChatRoom(owner_id=u.id,
+                        persona_id=p.id,
+                        v_likeability=random.randint(20, 100),
+                        v_erotic=random.randint(10, 40),
+                        v_v_mood=random.randint(20, 100),
+                        v_relationship=random.randint(20, 100))
+        db.add(room)
+        db.commit()
+        db.refresh(room)
+        
+        if u.id == current_user.id:
+            current_room_id = room.id
+            # 생성자의 방에 대해서만 초기 사고 세팅 진행
+            v_state = get_volatile_state(room.id, room)
+            
+            # 중기 사고용 p_dict 재구성
+            final_p_dict = {
+                "name": p.name,
+                "age": p.age,
+                "gender": p.gender,
+                "mbti": p.mbti,
+                "p_seriousness": p.p_seriousness,
+                "p_friendliness": p.p_friendliness,
+                "p_rationality": p.p_rationality,
+                "p_slang": p_slang,
+                "profile_details": p.profile_details,
+                "daily_schedule": p.daily_schedule
+            }
+            
+            # 비동기 처리를 위해 여기서 await 하지 않고 스케줄링하거나, 
+            # 일단 생성자에게만 바로 응답하기 위해 로직 분리. 
+            # (기존 로직 유지를 위해 그대로 await 실행)
+            _, tokens = await run_medium_thinking(v_state, final_p_dict, room.id)
+            update_user_tokens(db, current_user.id, tokens)
+            room.fact_warehouse = v_state['fact_warehouse']
+            db.commit() 
+            
     return {"status": "success"}
 
 
@@ -1167,7 +1367,9 @@ def delete_friend(room_id: int,
     room = db.query(ChatRoom).filter(
         ChatRoom.id == room_id, ChatRoom.owner_id == current_user.id).first()
     if room:
-        db.delete(room.persona)
+        # [v2.0.0] Shared Universe: 친구 삭제 시 채팅방만 삭제하고 이브 본체는 유지
+        # db.delete(room.persona) # <-- 기존: 이브 삭제 (X)
+        db.delete(room)           # <-- 변경: 내 목록에서만 삭제 (O)
         db.commit()
     return {"status": "deleted"}
 
@@ -1193,6 +1395,162 @@ def get_manifest():
 
 
 
+
+
+@app.get("/api/map")
+async def get_world_map(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    if not current_user: raise HTTPException(status_code=401)
+    
+    # 1. 구역별 인구 밀도 계산 (전체 이브)
+    # location_id -> count
+    pop_counts = {}
+    eves = db.query(Persona).all()
+    
+    # 임시: 위치가 없는 이브들에게 랜덤 위치 할당 (시각화 테스트용)
+    all_locs = db.query(MapLocation).all()
+    if not all_locs:
+        # DB에 맵 데이터가 없으면 시딩 시도
+        seed_world_map(db)
+        all_locs = db.query(MapLocation).all()
+        if not all_locs:
+             return {"districts": [], "friends": []}
+        
+    loc_map = {loc.id: loc for loc in all_locs}
+    
+    # 이브가 한 명도 없을 때도 맵 구조는 반환해야 함
+    for eve in eves:
+        if not eve.current_location_id:
+            # 여기서는 DB 저장 없이 메모리상에서만 랜덤 배정 (or 저장)
+            # 실제로는 스케줄러가 해야 함. 일단 시각화를 위해 랜덤 저장.
+            eve.current_location_id = random.choice(all_locs).id
+            db.commit()
+            
+        lid = eve.current_location_id
+        if lid:
+            pop_counts[lid] = pop_counts.get(lid, 0) + 1
+
+    # 2. 구역 데이터 구성
+    # District별로 그룹화
+    districts = {}
+    # 모든 Location을 순회하며 구조 생성 (이브 없어도 생성됨)
+    for loc in all_locs:
+        d_name = loc.district
+        if d_name not in districts:
+            districts[d_name] = {
+                "name": d_name,
+                "total_pop": 0,
+                "locations": []
+            }
+        
+        count = pop_counts.get(loc.id, 0)
+        districts[d_name]["total_pop"] += count
+        districts[d_name]["locations"].append({
+            "id": loc.id,
+            "name": loc.name,
+            "category": loc.category,
+            "pop": count,
+            "description": loc.description
+        })
+
+    # 3. 내 친구들 위치 (아바타 표시용)
+    my_friends = []
+    my_rooms = db.query(ChatRoom).filter(ChatRoom.owner_id == current_user.id).all()
+    for room in my_rooms:
+        p = room.persona
+        if p.current_location_id:
+            loc = loc_map.get(p.current_location_id)
+            if loc:
+                my_friends.append({
+                    "id": p.id,
+                    "name": p.name,
+                    "image": p.profile_image_url,
+                    "district": loc.district,
+                    "location_name": loc.name,
+                    "room_id": room.id
+                })
+
+    return {
+        "districts": list(districts.values()),
+        "friends": my_friends
+    }
+
+
+@app.get("/api/map")
+async def get_world_map(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    if not current_user: raise HTTPException(status_code=401)
+    
+    # 1. 구역별 인구 밀도 계산 (전체 이브)
+    # location_id -> count
+    pop_counts = {}
+    eves = db.query(Persona).all()
+    
+    # 임시: 위치가 없는 이브들에게 랜덤 위치 할당 (시각화 테스트용)
+    all_locs = db.query(MapLocation).all()
+    if not all_locs:
+        # DB에 맵 데이터가 없으면 시딩 시도
+        seed_world_map(db)
+        all_locs = db.query(MapLocation).all()
+        if not all_locs:
+             return {"districts": [], "friends": []}
+        
+    loc_map = {loc.id: loc for loc in all_locs}
+    
+    # 이브가 한 명도 없을 때도 맵 구조는 반환해야 함
+    for eve in eves:
+        if not eve.current_location_id:
+            # 여기서는 DB 저장 없이 메모리상에서만 랜덤 배정 (or 저장)
+            # 실제로는 스케줄러가 해야 함. 일단 시각화를 위해 랜덤 저장.
+            eve.current_location_id = random.choice(all_locs).id
+            db.commit()
+            
+        lid = eve.current_location_id
+        if lid:
+            pop_counts[lid] = pop_counts.get(lid, 0) + 1
+
+    # 2. 구역 데이터 구성
+    # District별로 그룹화
+    districts = {}
+    # 모든 Location을 순회하며 구조 생성 (이브 없어도 생성됨)
+    for loc in all_locs:
+        d_name = loc.district
+        if d_name not in districts:
+            districts[d_name] = {
+                "name": d_name,
+                "total_pop": 0,
+                "locations": []
+            }
+        
+        count = pop_counts.get(loc.id, 0)
+        districts[d_name]["total_pop"] += count
+        districts[d_name]["locations"].append({
+            "id": loc.id,
+            "name": loc.name,
+            "category": loc.category,
+            "pop": count,
+            "description": loc.description
+        })
+
+    # 3. 내 친구들 위치 (아바타 표시용)
+    my_friends = []
+    my_rooms = db.query(ChatRoom).filter(ChatRoom.owner_id == current_user.id).all()
+    for room in my_rooms:
+        p = room.persona
+        if p.current_location_id:
+            loc = loc_map.get(p.current_location_id)
+            if loc:
+                my_friends.append({
+                    "id": p.id,
+                    "name": p.name,
+                    "image": p.profile_image_url,
+                    "district": loc.district,
+                    "location_name": loc.name,
+                    "room_id": room.id
+                })
+
+    return {
+        "districts": list(districts.values()),
+        "friends": my_friends
+    }
 
 
 @app.get("/", response_class=HTMLResponse)

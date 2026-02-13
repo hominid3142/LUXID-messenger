@@ -242,6 +242,23 @@
             </div>
         </div>
 
+        <!-- [v2.0.0] DM 전송 확인 모달 -->
+        <div id="dm-confirm-overlay" class="overlay-view" style="display: none; z-index: 6000;">
+            <div class="confirm-box"
+                style="background: #fff; padding: 25px; border-radius: 20px; width: 85%; max-width: 320px; text-align: center; box-shadow: 0 10px 30px rgba(0,0,0,0.3);">
+                <div style="font-size: 40px; margin-bottom: 15px;">💌</div>
+                <div style="font-size: 16px; font-weight: 700; margin-bottom: 8px; color: var(--text-main);">DM을
+                    보내시겠습니까?</div>
+                <div style="font-size: 13px; color: var(--text-sub); margin-bottom: 25px;">이브와 1:1 대화를 시작합니다.</div>
+                <div style="display: flex; gap: 10px;">
+                    <button onclick="closeConfirmDM()"
+                        style="flex: 1; padding: 12px; border: 1px solid var(--border); background: #fff; border-radius: 12px; font-weight: 600; color: var(--text-sub); cursor: pointer;">취소</button>
+                    <button id="confirm-dm-btn"
+                        style="flex: 1; padding: 12px; border: none; background: var(--blue); border-radius: 12px; font-weight: 600; color: #fff; cursor: pointer;">확인</button>
+                </div>
+            </div>
+        </div>
+
         <!-- LUXID 리브랜딩 및 애니메이션 구조 -->
         <div id="auth-overlay">
             <!-- [v1.5.0] 1단계: 시작하기 화면 -->
@@ -350,18 +367,27 @@
         </div>
 
         <nav class="bottom-nav">
-            <div class="nav-item active" onclick="switchMobileView('list')">
-                <span>👤</span>
-                <span>친구</span>
+            <!-- [v2.0.0] 피드 탭 추가 (기본 홈) -->
+            <div class="nav-item active" onclick="switchMobileView('feed')">
+                <span class="icon">🏠</span>
+                <span class="label">홈</span>
             </div>
-            <div class="nav-item" onclick="switchMobileView('chats')">
-                <span>💬</span>
-                <span>대화</span>
+            <div class="nav-item" onclick="switchMobileView('map')">
+                <span class="icon">🗺️</span>
+                <span class="label">맵</span>
+            </div>
+            <div class="nav-item" onclick="switchMobileView('list')">
+                <span class="icon">👥</span>
+                <span class="label">친구</span>
+            </div>
+            <div class="nav-item" onclick="switchMobileView('chat')">
+                <span class="icon">💬</span>
+                <span class="label">채팅</span>
             </div>
             <!-- [v1.5.0] 설정 탭 추가 -->
             <div class="nav-item" onclick="switchMobileView('settings')">
-                <span>⚙️</span>
-                <span>설정</span>
+                <span class="icon">⚙️</span>
+                <span class="label">설정</span>
             </div>
             <div id="nav-dev" class="nav-item" style="display: none" onclick="switchMobileView('dev')">
                 🔧 개발자
@@ -376,7 +402,7 @@
                                 width: 100%;
                             ">
                     <div style="display: flex; align-items: center">
-                        <h1 id="tab-title">친구</h1>
+                        <h1 id="tab-title">LUXID</h1>
                         <div class="server-status-wrap">
                             <div id="engine-dot" class="status-dot active"></div>
                             <span id="engine-text">Active</span>
@@ -398,18 +424,41 @@
 
             <div id="tab-viewport">
                 <div id="tab-slider">
+                    <!-- [v2.0.0] 피드 뷰 (Index 0) -->
+                    <div id="feed-tab-view" class="tab-pane">
+                        <div id="feed-list" class="feed-container">
+                            <!-- JS로 피드 카드 렌더링 -->
+                        </div>
+                    </div>
+
+                    <!-- [v2.0.0] Map Tab View (Index 1) -->
+                    <div id="map-tab-view" class="tab-pane" style="display: flex;">
+                        <div class="map-container">
+                            <div class="map-header">
+                                <h2>LUXID 월드</h2>
+                                <span class="live-badge">● 라이브</span>
+                            </div>
+                            <div id="world-map-grid" class="world-map-grid">
+                                <!-- JS Rendered Districts -->
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- [v1.0.0] 친구 목록 뷰 (Index 2) -->
                     <div id="friend-tab-view" class="tab-pane">
                         <div id="friend-list"></div>
                         <button id="add-friend-btn" class="add-btn" onclick="addFriend()">
                             + 새로운 친구 찾기
                         </button>
                     </div>
+
+                    <!-- [v1.0.0] 채팅 목록 뷰 (Index 3) -->
                     <div id="chat-tab-view" class="tab-pane">
                         <div id="chat-list"></div>
                     </div>
 
-                    <!-- [v1.5.0] 설정 화면 -->
-                    <div id="settings-tab-view" class="tab-pane" style="display: none">
+                    <!-- [v1.5.0] 설정 화면 (Index 4) -->
+                    <div id="settings-tab-view" class="tab-pane">
                         <div class="settings-section">
                             <h3 class="settings-title">🔍 친구 찾기 설정</h3>
                             <label class="settings-label">이브 성별 필터</label>

@@ -483,17 +483,20 @@ body {
 
 #tab-slider {
   display: flex;
-  width: 200%;
+  width: 500%;
+  /* 5 tabs */
   height: 100%;
-  transition: transform 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+  transition: transform 0.3s cubic-bezier(0.25, 1, 0.5, 1);
 }
 
 .tab-pane {
-  width: 50%;
+  width: 20%;
+  /* 1/5 */
   height: 100%;
-  overflow-y: auto;
   display: flex;
   flex-direction: column;
+  overflow: hidden;
+  /* padding-top은 tab-pane 내부에서 처리하거나 헤더 높이만큼 띄움 */
 }
 
 #main-chat {
@@ -796,8 +799,391 @@ body.dev-unlocked .nav-item#nav-dev {
 }
 
 #friend-list,
-#chat-list {
-  padding: 10px 0;
+
+/* [v2.0.0] Social Feed Styles (Threads/Twitter Style) */
+.feed-container {
+  padding-bottom: 80px;
+  background: var(--bg);
+}
+
+#feed-list {
+  height: 100%;
+  overflow-y: auto;
+  padding-bottom: 80px;
+  /* Nav bar space */
+  -ms-overflow-style: none;
+  /* IE/Edge */
+  scrollbar-width: none;
+  /* Firefox */
+}
+
+#feed-list::-webkit-scrollbar {
+  display: none;
+}
+
+.feed-card {
+  background: #fff;
+  padding: 15px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  /* 좌측 아바타, 우측 콘텐츠 */
+  gap: 12px;
+  cursor: pointer;
+  /* 카드 전체 클릭 가능성 */
+  transition: background 0.2s;
+}
+
+.feed-card:hover {
+  background: #fafafa;
+}
+
+/* 좌측: 아바타 */
+.feed-avatar-col {
+  flex-shrink: 0;
+  width: 40px;
+}
+
+.feed-avatar {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  background: var(--gray-bubble);
+  object-fit: cover;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 16px;
+  font-weight: bold;
+  color: #fff;
+  background-color: var(--blue);
+  cursor: pointer;
+}
+
+.feed-avatar img {
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  object-fit: cover;
+}
+
+/* 우측: 콘텐츠 영역 */
+.feed-content-col {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+}
+
+.feed-header-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 4px;
+}
+
+.feed-username {
+  font-weight: 700;
+  font-size: 15px;
+  color: var(--text-main);
+  cursor: pointer;
+}
+
+.feed-username:hover {
+  text-decoration: underline;
+}
+
+.feed-time {
+  font-size: 12px;
+  color: var(--text-sub);
+}
+
+.feed-text {
+  font-size: 15px;
+  line-height: 1.5;
+  color: var(--text-main);
+  margin-bottom: 10px;
+  white-space: pre-wrap;
+  /* 줄바꿈 허용 */
+}
+
+.feed-image-container {
+  margin-bottom: 12px;
+}
+
+.feed-image {
+  width: 100%;
+  max-height: 400px;
+  object-fit: cover;
+  border-radius: 12px;
+  border: 1px solid rgba(0, 0, 0, 0.05);
+}
+
+.feed-actions {
+  display: flex;
+  gap: 20px;
+  margin-top: 5px;
+}
+
+.feed-action-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 18px;
+  color: var(--text-sub);
+  /* 기본 회색 */
+  padding: 0;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  transition: color 0.2s;
+}
+
+.feed-action-btn:hover {
+  color: var(--blue);
+}
+
+.feed-action-btn.liked {
+  color: #ff2d55;
+}
+
+.feed-count {
+  font-size: 12px;
+}
+
+/* [v2.0.0] Threaded Comments Styles */
+.feed-comments-section {
+  margin-top: 15px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+  animation: fadeIn 0.2s;
+}
+
+.feed-comment-item {
+  margin-bottom: 12px;
+  padding-left: 10px;
+  border-left: 2px solid var(--border);
+  /* 스레드 느낌의 라인 */
+}
+
+.comment-author-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.comment-avatar {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  object-fit: cover;
+  background: var(--gray-bubble);
+}
+
+.comment-username {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-main);
+}
+
+.comment-time {
+  font-size: 11px;
+  color: var(--text-sub);
+}
+
+.comment-content {
+  font-size: 13px;
+  color: var(--text-main);
+  line-height: 1.4;
+  padding-left: 28px;
+  /* 아바타 + 간격만큼 들여쓰기 */
+}
+
+/* [v2.0.0] World Map Styles (Light Theme) */
+.map-container {
+  padding: 20px;
+  height: 100%;
+  overflow-y: auto;
+  background: #f8f9fa;
+  /* Light BG */
+}
+
+.map-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 20px;
+}
+
+.map-header h2 {
+  font-size: 24px;
+  font-weight: 800;
+  letter-spacing: -0.5px;
+  background: linear-gradient(90deg, #333, #666);
+  /* Dark Gradient Text */
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+.live-badge {
+  color: #00c853;
+  /* Darker Green */
+  font-size: 12px;
+  font-weight: 600;
+  animation: pulse 2s infinite;
+}
+
+@keyframes pulse {
+  0% {
+    opacity: 0.5;
+  }
+
+  50% {
+    opacity: 1;
+  }
+
+  100% {
+    opacity: 0.5;
+  }
+}
+
+.world-map-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 15px;
+  padding-bottom: 80px;
+}
+
+/* District Card */
+.district-card {
+  position: relative;
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 20px;
+  overflow: hidden;
+  transition: transform 0.2s, box-shadow 0.2s;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);
+  /* Soft Shadow */
+}
+
+.district-card:active {
+  transform: scale(0.98);
+}
+
+.district-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 15px;
+  position: relative;
+  z-index: 2;
+}
+
+.district-name {
+  font-size: 18px;
+  font-weight: 800;
+  color: var(--text-main);
+  /* Dark Text */
+}
+
+.district-pop {
+  font-size: 11px;
+  color: #555;
+  background: #f0f0f5;
+  padding: 4px 8px;
+  border-radius: 12px;
+  font-weight: 600;
+}
+
+/* Locations List inside District */
+.location-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  position: relative;
+  z-index: 2;
+}
+
+.location-tag {
+  font-size: 11px;
+  color: var(--text-sub);
+  background: #f5f5f7;
+  padding: 4px 8px;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.location-tag.hot {
+  background: #fff0f0;
+  border: 1px solid #ffcccc;
+  color: #ff3b30;
+}
+
+/* Friends Avatars on Map */
+.map-friends-row {
+  margin-top: 15px;
+  display: flex;
+  gap: -8px;
+  padding-left: 8px;
+}
+
+.map-friend-avatar {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  border: 2px solid #fff;
+  /* White border for overlapping */
+  margin-left: -8px;
+  transition: transform 0.2s;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+}
+
+.map-friend-avatar:hover {
+  transform: translateY(-5px) scale(1.2);
+  z-index: 10;
+}
+
+/* Theme Colors per District (Subtle gradients) */
+.district-card[data-theme="루미나 시티"] {
+  background: linear-gradient(135deg, #fff, #f0f4ff);
+}
+
+.district-card[data-theme="세렌 밸리"] {
+  background: linear-gradient(135deg, #fff, #f0fff4);
+}
+
+.district-card[data-theme="에코 베이"] {
+  background: linear-gradient(135deg, #fff, #f0f8ff);
+}
+
+.district-card[data-theme="더 하이브"] {
+  background: linear-gradient(135deg, #fff, #fffbf0);
+}
+
+.district-card[data-theme="네온 디스트릭트"] {
+  background: linear-gradient(135deg, #fff, #fcf0ff);
+}
+
+.district-card[data-theme="The Hive"] {
+  background: linear-gradient(135deg, rgba(80, 50, 30, 0.3), rgba(30, 20, 10, 0.6));
+}
+
+.district-card[data-theme="Neon District"] {
+  background: linear-gradient(135deg, rgba(100, 20, 80, 0.3), rgba(40, 10, 30, 0.6));
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(-5px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 .friend-item {

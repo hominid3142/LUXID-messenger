@@ -41,7 +41,7 @@ class Persona(Base):
                      __tablename__ = "personas"
                      id = Column(Integer, primary_key=True, index=True)
                      owner_id = Column(
-                         Integer, ForeignKey("users.id"))  # 데이터 소유권 격리를 위한 외래키
+                         Integer, ForeignKey("users.id"), nullable=True)  # [v2.0] 공유 이브를 위해 Nullable 허용
                      name = Column(String)
                      age = Column(Integer)
                      gender = Column(String)
@@ -59,9 +59,13 @@ class Persona(Base):
                      profile_details = Column(
                          JSON, nullable=True)  # 틴더 스타일의 자기소개 및 상세 정보
                      daily_schedule = Column(
-                         JSON, nullable=True)  # 30분 단위의 하루 일과 스케줄
-                     last_schedule_date = Column(
-                         DateTime, nullable=True)  # 일과표가 마지막으로 생성/갱신된 날짜
+        JSON, nullable=True)  # [v1.7.0 수정] 하루 일과 (Wake, Sleep, Job, Eat...)
+
+                     last_schedule_date = Column(DateTime, nullable=True)  # [v2.0.0] 스케줄 생성 날짜
+                     
+                     # [v2.0.0] World Map Location (현재 위치)
+                     current_location_id = Column(Integer, ForeignKey("map_locations.id"), nullable=True)
+                     current_location = relationship("MapLocation")
 
                      owner = relationship("User", back_populates="personas")
                      rooms = relationship("ChatRoom",
@@ -116,3 +120,42 @@ class SystemNotice(Base):
     content = Column(String)
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime, default=datetime.utcnow)
+
+
+# [v2.0.0] SNS 피드 시스템
+class FeedPost(Base):
+    __tablename__ = "feed_posts"
+    id = Column(Integer, primary_key=True, index=True)
+    persona_id = Column(Integer, ForeignKey("personas.id"))
+    content = Column(String)
+    image_url = Column(String, nullable=True)
+    like_count = Column(Integer, default=0)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    persona = relationship("Persona", backref="posts")
+    comments = relationship("FeedComment", back_populates="post", cascade="all, delete-orphan")
+
+
+class FeedComment(Base):
+    __tablename__ = "feed_comments"
+    id = Column(Integer, primary_key=True, index=True)
+    post_id = Column(Integer, ForeignKey("feed_posts.id"))
+    persona_id = Column(Integer, ForeignKey("personas.id"), nullable=True) # 이브가 쓴 댓글
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True)       # 유저가 쓴 댓글 (확장성)
+    content = Column(String)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    post = relationship("FeedPost", back_populates="comments")
+    persona = relationship("Persona")
+    user = relationship("User")
+
+
+# [v2.0.0] World Map Locations
+class MapLocation(Base):
+    __tablename__ = "map_locations"
+    id = Column(Integer, primary_key=True, index=True)
+    district = Column(String)  # 구역 (Lumina City, Seren Valley, etc.)
+    name = Column(String)      # 장소명 (Lumina Plaza, etc.)
+    category = Column(String)  # 카테고리 (Work, Rest, Play, Home)
+    description = Column(String) # 설명 (Vibe)
+    image_url = Column(String, nullable=True) # 이미지 URL (옵션)
