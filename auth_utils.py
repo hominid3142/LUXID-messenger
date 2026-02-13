@@ -3,6 +3,8 @@ import bcrypt
 from datetime import datetime, timedelta
 from typing import Optional
 from jose import JWTError, jwt
+from sqlalchemy.orm import Session
+from models import User
 
 # 1. 보안 설정
 # Replit Secrets(환경 변수)에서 비밀키를 가져옵니다. 없을 경우 기본값을 사용하지만 런칭 시 반드시 설정 필요합니다.
@@ -60,3 +62,13 @@ def decode_access_token(token: str) -> Optional[dict]:
         return payload
     except JWTError:
         return None
+
+def update_user_tokens(db: Session, user_id: int, tokens_used: int):
+    try:
+        user = db.query(User).filter(User.id == user_id).first()
+        if user:
+            user.total_tokens += tokens_used
+            db.commit()
+    except Exception as e:
+        print(f"Token Update Error: {e}")
+        db.rollback()
