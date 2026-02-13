@@ -2,10 +2,13 @@ import os
 import json
 import re
 import asyncio
-from datetime import datetime
+from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from google import genai
-from memory import KST, get_date_info
+from sqlalchemy.orm import Session
+from memory import KST, get_date_info, get_volatile_state
+from models import ChatRoom, Persona
+from auth_utils import update_user_tokens
 
 # .env 파일 로드
 load_dotenv()
@@ -409,3 +412,98 @@ async def run_utterance(v_state, p_dict, room_id, custom_prompt=None, model_id=N
     except Exception as e:
         capture_debug_log(room_id, "UTTERANCE_ERROR", target_model, final_prompt, str(e), 0)
         return {"action": "WAIT", "responses": []}, 0
+
+
+# ---------------------------------------------------------
+# [v1.9.3] 스케줄러를 위한 라이프사이클 동기화 함수 (Main -> Engine 이동)
+# ---------------------------------------------------------
+async def sync_eve_life(room_id, db: Session):
+    """이브의 부재 기간을 시뮬레이션합니다. (일기 작성 + 새 일과 생성)"""
+    room = db.query(ChatRoom).filter(ChatRoom.id == room_id).first()
+    if not room or not room.persona: return
+
+    p = room.persona
+    v_state = get_volatile_state(room_id, room)
+
+    last_date = p.last_schedule_date.replace(
+        tzinfo=KST) if p.last_schedule_date else datetime.now(KST) - timedelta(
+            days=1)
+    now = datetime.now(KST)
+
+    if last_date.date() == now.date():
+        return
+
+    medium_logs = v_state.get('medium_term_logs', [])
+    old_schedule_data = p.daily_schedule
+    
+    # [Fix] JSON Serialization for old_schedule
+    # If old_schedule is a string (legacy), try to parse it. If dict, use as is.
+    if isinstance(old_schedule_data, str):
+        try:
+            old_schedule = json.loads(old_schedule_data)
+        except:
+            old_schedule = {}
+    else:
+        old_schedule = old_schedule_data
+
+    date_info_now = get_date_info(now)
+    date_info_yesterday = get_date_info(last_date)
+
+    prompt = f"""
+    당신은 '{p.name}'입니다. 
+    어제의 날짜: {date_info_yesterday['full_str']}
+    오늘의 날짜: {date_info_now['full_str']}
+
+    [어제의 일과] {json.dumps(old_schedule, ensure_ascii=False)}
+    [어제의 사건/생각들] {json.dumps(medium_logs[-5:] if medium_logs else "특별한 일 없음", ensure_ascii=False)}
+
+    [임무]
+    1. 어제의 일기: 어제의 일과와 사건들을 섞어서 1인칭 시점으로 짧은 일기를 작성하세요. (3문장 이내)
+    2. 오늘의 일과: 오늘({date_info_now['full_str']})을 위한 간단한 일과를 요일과 공휴일 여부를 고려하여 작성하세요.
+       - 기상 시간 (wake_time): 07:00~09:00 사이
+       - 오늘 할 일 (daily_tasks): 1~3개의 주요 활동 (반드시 'HH:MM 활동내용' 형식으로 시간을 포함할 것)
+       - 취침 시간 (sleep_time): 22:00~24:00 사이
+
+    JSON 응답:
+    {{
+        "diary_entry": "일기 내용",
+        "new_schedule": {{
+            "wake_time": "07:30",
+            "daily_tasks": ["10:00 활동1", "14:00 활동2", "18:00 활동3"],
+            "sleep_time": "23:00"
+        }}
+    }}
+    """
+    try:
+        res = await client.aio.models.generate_content(
+            model=MODEL_ID,
+            contents=prompt,
+            config={'response_mime_type': 'application/json'})
+        
+        # [Fix] Extract JSON properly
+        raw_text = res.text
+        match = re.search(r'\{.*\}', raw_text, re.DOTALL)
+        if match:
+            data = json.loads(match.group())
+
+            p.daily_schedule = data['new_schedule']
+            p.last_schedule_date = now
+
+            current_diaries = list(room.diaries) if room.diaries else []
+            current_diaries.append({
+                "date": last_date.strftime('%Y-%m-%d'),
+                "content": data['diary_entry']
+            })
+            room.diaries = current_diaries[-30:]
+
+            db.commit()
+
+            v_state[
+                'medium_term_diagnosis'] = f"방금 {last_date.date()}의 일기를 쓰고 오늘 일과를 세웠어."
+            update_user_tokens(db, room.owner_id,
+                            res.usage_metadata.total_token_count)
+        else:
+            print("Sync Life Error: JSON not found in response")
+
+    except Exception as e:
+        print(f"Sync Life Error: {e}")
