@@ -1,0 +1,39 @@
+version: '3.8'
+
+services:
+  app:
+    build: .
+    container_name: luxid_app
+    restart: always
+    ports:
+      - "5003:5003"
+    env_file:
+      - .env
+    environment:
+      # Override DATABASE_URL to use the postgres container
+      # Format: postgresql://user:password@host:port/dbname
+      - DATABASE_URL=postgresql://luxid:luxid_password@db:5432/luxid_db
+    depends_on:
+      - db
+    volumes:
+      # Mount static files to allow updates without rebuilding (optional, mainly for dev/media)
+      - ./static:/app/static
+      # Mount data directory if you use file-based storage (like artifacts/brain), 
+      # but ideally these should be in a volume or S3. 
+      # For now, we assume the app is stateless except for DB.
+
+  db:
+    image: postgres:15-alpine
+    container_name: luxid_db
+    restart: always
+    environment:
+      - POSTGRES_USER=luxid
+      - POSTGRES_PASSWORD=luxid_password
+      - POSTGRES_DB=luxid_db
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+
+volumes:
+  postgres_data:

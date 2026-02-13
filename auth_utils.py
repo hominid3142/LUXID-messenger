@@ -34,7 +34,7 @@ def get_password_hash(password: str) -> str:
 def create_access_token(data: dict,
                         expires_delta: Optional[timedelta] = None) -> str:
     """
-    유저 정보(id, username, is_admin 등)를 담은 JWT 액세스 토큰을 생성합니다.
+    유저 정보(id, username, is_admin 등)를 담은 JWT 액세스 토큰.
     """
     to_encode = data.copy()
     if expires_delta:
