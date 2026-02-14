@@ -96,6 +96,10 @@ class ChatRoom(Base):
                      
                      # [v1.5.0 추가] 이브가 느끼는 사용자와의 관계
                      relationship_category = Column(String, default="낯선 사람")
+                     
+                     # [v2.1.0] 팔로잉 시스템 (양방향)
+                     is_user_following = Column(Boolean, default=False)  # 유저가 이브를 팔로우했는지
+                     is_eve_following = Column(Boolean, default=False)   # 이브가 유저를 팔로우(맞팔)했는지
 
                      owner = relationship("User", back_populates="rooms")
                      persona = relationship("Persona", back_populates="rooms")

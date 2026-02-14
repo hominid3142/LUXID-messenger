@@ -1222,6 +1222,92 @@ function generateDefaultAvatar(username) {
     }
 }
 
+// [v2.1.0] 친구 프로필 모달 (팔로우 기능 추가)
+async function showProfileModal(roomId) {
+    const f = friendsData.find(item => item.room_id === roomId);
+    if (!f) return;
+
+    // 모달 DOM 요소 가져오기
+    const modal = document.getElementById("profile-modal");
+    const img = document.getElementById("modal-profile-img");
+    const name = document.getElementById("modal-profile-name");
+    const status = document.getElementById("modal-profile-status");
+    const followBtn = document.getElementById("modal-follow-btn");
+
+    // 기본 정보 바인딩
+    img.src = f.profile_image_url || "";
+    name.innerText = f.name;
+    status.innerText = f.status === "online" ? "Online" : "Offline";
+    status.className = `status-badge ${f.status || "offline"}`;
+
+    document.getElementById("modal-profile-age").innerText = f.age ? `${f.age}세` : "-";
+    document.getElementById("modal-profile-job").innerText = f.job || "-";
+    document.getElementById("modal-profile-mbti").innerText = f.mbti || "-";
+    document.getElementById("modal-profile-hobby").innerText = f.hobby || "-";
+    document.getElementById("modal-profile-goal").innerText = f.goal || "-";
+    document.getElementById("modal-profile-intro").innerText = f.intro || "-";
+
+    // 팔로우 상태 확인 및 버튼 렌더링
+    // friendsData에 is_user_following이 없으면 false로 취급
+    const isFollowing = f.is_user_following === true;
+    updateFollowBtn(followBtn, isFollowing, f.persona_id);
+
+    modal.classList.add("show");
+}
+
+function updateFollowBtn(btn, isFollowing, personaId) {
+    if (isFollowing) {
+        btn.innerText = "팔로잉";
+        btn.style.backgroundColor = "#8e8e93"; // 회색
+        btn.style.color = "#fff";
+        btn.onclick = () => toggleFollow(personaId, false, btn);
+    } else {
+        btn.innerText = "팔로우";
+        btn.style.backgroundColor = "var(--blue)"; // 파란색
+        btn.style.color = "#fff";
+        btn.onclick = () => toggleFollow(personaId, true, btn);
+    }
+}
+
+async function toggleFollow(personaId, doFollow, btn) {
+    const url = doFollow ? "/api/follow" : "/api/unfollow";
+
+    // 낙관적 업데이트 (UI 먼저 변경)
+    updateFollowBtn(btn, doFollow, personaId);
+
+    try {
+        const res = await fetch(url, {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+                "Authorization": `Bearer ${accessToken}`
+            },
+            body: JSON.stringify({ persona_id: personaId })
+        });
+
+        if (res.ok) {
+            const data = await res.json();
+            // 성공 시 친구 목록 데이터 갱신 (팔로우 상태 반영)
+            const f = friendsData.find(item => item.persona_id === personaId);
+            if (f) {
+                f.is_user_following = data.is_user_following;
+            }
+        } else {
+            // 실패 시 롤백
+            updateFollowBtn(btn, !doFollow, personaId);
+            alert("요청 처리에 실패했습니다.");
+        }
+    } catch (e) {
+        console.error(e);
+        updateFollowBtn(btn, !doFollow, personaId);
+        alert("네트워크 오류가 발생했습니다.");
+    }
+}
+
+function closeProfileModal() {
+    document.getElementById("profile-modal").classList.remove("show");
+}
+
 // 프로필 작성 화면 표시
 function showProfileSetup() {
     document.getElementById("auth-overlay").style.display = "none";
