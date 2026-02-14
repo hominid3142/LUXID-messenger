@@ -181,22 +181,27 @@
                     "한 줄 어필"
                 </div>
 
-                <div class="profile-info-main">
-                    <div id="profile-name" class="profile-name">이름</div>
-                    <div id="profile-mbti" class="profile-mbti-tag">
-                        MBTI
-                    </div>
-                </div>
-
-                <div id="profile-bio-container" class="profile-bio-scroll">
-                    <div id="profile-intro" class="profile-intro">
-                        안녕하세요, LUXID에 살고 있어요.
+                <div class="modal-body">
+                    <div class="user-profile-header">
+                        <img id="modal-profile-img" src="" alt="Profile Image" />
+                        <div class="user-profile-info">
+                            <div id="modal-profile-name" class="modal-nickname">Nickname</div>
+                            <div id="modal-profile-status" class="status-badge">Online</div>
+                        </div>
                     </div>
 
-                    <div class="profile-detail-grid">
-                        <div class="p-detail-item">
-                            <span class="label">💼 직업</span>
-                            <span id="profile-job" class="val">-</span>
+                    <!-- [v2.1.0] 팔로우 버튼 추가 -->
+                    <div style="margin-top: 12px; margin-bottom: 20px; text-align: center;">
+                        <button id="modal-follow-btn" class="primary-btn"
+                            style="width: 100%; border-radius: 12px; font-weight: 600;">
+                            팔로우
+                        </button>
+                    </div>
+
+                    <div class="profile-details-grid">
+                        <div class="detail-item">
+                            <label>나이</label>
+                            <span id="modal-profile-age">-</span>
                         </div>
                         <div class="p-detail-item">
                             <span class="label">✨ 목표</span>

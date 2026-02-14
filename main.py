@@ -1328,7 +1328,9 @@ def get_friends(current_user: User = Depends(get_current_user),
         "v_relationship": r.v_relationship,
         "history": r.history,
         "relationship_category": r.relationship_category,
-        "daily_schedule": r.persona.daily_schedule
+        "daily_schedule": r.persona.daily_schedule,
+        "is_user_following": r.is_user_following,
+        "is_eve_following": r.is_eve_following
     } for r in rooms]
 
 
@@ -1466,7 +1468,8 @@ async def get_world_map(current_user: User = Depends(get_current_user), db: Sess
                     "image": p.profile_image_url,
                     "district": loc.district,
                     "location_name": loc.name,
-                    "room_id": room.id
+                    "room_id": room.id,
+                    "is_user_following": room.is_user_following
                 })
 
     return {
