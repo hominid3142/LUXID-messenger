@@ -235,7 +235,8 @@ function switchAdminTab(tab) {
     const views = {
         "status": document.getElementById("admin-status-view"),
         "users": document.getElementById("admin-user-view"),
-        "notice": document.getElementById("admin-notice-view")
+        "notice": document.getElementById("admin-notice-view"),
+        "factory": document.getElementById("admin-factory-view")
     };
     const detailView = document.getElementById("admin-detail-view");
 
@@ -244,13 +245,10 @@ function switchAdminTab(tab) {
 
     if (views[tab]) views[tab].style.display = "block";
 
-    const atabStatus = document.getElementById("atab-status");
-    const atabUsers = document.getElementById("atab-users");
-    const atabNotice = document.getElementById("atab-notice");
-
-    if (atabStatus) atabStatus.classList.toggle("active", tab === "status");
-    if (atabUsers) atabUsers.classList.toggle("active", tab === "users");
-    if (atabNotice) atabNotice.classList.toggle("active", tab === "notice");
+    ["status", "users", "notice", "factory"].forEach(t => {
+        const el = document.getElementById("atab-" + t);
+        if (el) el.classList.toggle("active", tab === t);
+    });
 
     if (tab === "status") backToEveBrowser();
     if (tab === "users") loadAdminUsers();
@@ -353,6 +351,17 @@ async function loadFriends() {
 function renderFriendList() {
     const list = document.getElementById("friend-list");
     if (!list) return;
+
+    if (friendsData.length === 0) {
+        list.innerHTML = `
+            <div class="empty-state">
+                <div class="empty-icon">👥</div>
+                <div class="empty-text">친구가 없습니다</div>
+            </div>
+        `;
+        return;
+    }
+
     list.innerHTML = friendsData
         .map((f) => {
             const colors = ["#FF9500", "#FF2D55", "#AF52DE", "#5AC8FA", "#34C759"];
@@ -415,6 +424,16 @@ function renderChatList() {
     if (!list) return;
     const chattingFriends = friendsData.filter((f) => f.history && f.history.length > 0);
 
+    if (chattingFriends.length === 0) {
+        list.innerHTML = `
+            <div class="empty-state">
+                <div class="empty-icon">💬</div>
+                <div class="empty-text">대화가 없습니다</div>
+            </div>
+        `;
+        return;
+    }
+
     list.innerHTML = chattingFriends
         .map((f) => {
             const lastMsg = f.history[f.history.length - 1].content;
@@ -440,12 +459,11 @@ function renderChatList() {
         .join("");
 }
 
-function openProfile(roomId) {
+async function openProfile(roomId) {
     const f = friendsData.find((item) => item.room_id === roomId);
     if (!f) return;
 
-    const overlay = document.getElementById("profile-overlay");
-    const avatar = document.getElementById("profile-avatar");
+    const heroImg = document.getElementById("profile-hero-image");
     const name = document.getElementById("profile-name");
     const mbti = document.getElementById("profile-mbti");
     const hook = document.getElementById("profile-hook");
@@ -458,15 +476,21 @@ function openProfile(roomId) {
     const chatBtn = document.getElementById("profile-chat-btn");
     const delBtn = document.getElementById("profile-delete-btn");
 
-    const colors = ["#FF9500", "#FF2D55", "#AF52DE", "#5AC8FA", "#34C759"];
-
+    // [v3.3.0] Hero image: full-width background
     if (f.profile_image_url) {
-        avatar.style.background = "none";
-        // [v1.7.0] 이미지 클릭 시 라이트박스 오픈
-        avatar.innerHTML = `<img src="${f.profile_image_url}" class="avatar-img-large" onclick="openLightbox('${f.profile_image_url}', '${(f.image_prompt || "").replace(/'/g, "\\'")}'); event.stopPropagation();">`;
+        heroImg.style.backgroundImage = `url('${f.profile_image_url}')`;
+        heroImg.style.background = `url('${f.profile_image_url}') center/cover no-repeat`;
+        heroImg.classList.add("clickable");
+        heroImg.onclick = (e) => {
+            if (e.target.closest('.profile-hero-back')) return; // Prevent back button click from triggering
+            openLightbox(f.profile_image_url, (f.image_prompt || "").replace(/'/g, "\\'"));
+        };
     } else {
-        avatar.style.background = colors[f.name.charCodeAt(0) % 5];
-        avatar.innerText = f.name[0];
+        const colors = ["#FF9500", "#FF2D55", "#AF52DE", "#5AC8FA", "#34C759"];
+        heroImg.style.backgroundImage = "none";
+        heroImg.style.background = `linear-gradient(135deg, ${colors[f.name.charCodeAt(0) % 5]}, #667eea)`;
+        heroImg.classList.remove("clickable");
+        heroImg.onclick = null;
     }
 
     name.innerText = f.name;
@@ -484,6 +508,27 @@ function openProfile(roomId) {
         .map((i) => `<span class="interest-tag">${i}</span>`)
         .join("");
 
+    // [v3.2.0] Stats Row
+    const relBadge = document.getElementById("profile-stat-rel");
+    if (relBadge) relBadge.innerText = f.relationship_category || "분석 중";
+
+    const statFriends = document.getElementById("profile-stat-friends");
+    const statActive = document.getElementById("profile-stat-active");
+    if (statFriends) statFriends.innerText = "·";
+    if (statActive) statActive.innerText = "·";
+
+    if (f.persona_id) {
+        fetch(`/persona/${f.persona_id}/stats`, {
+            headers: { Authorization: `Bearer ${accessToken}` }
+        }).then(r => r.ok ? r.json() : null).then(stats => {
+            if (stats) {
+                if (statFriends) statFriends.innerText = stats.total_friends;
+                if (statActive) statActive.innerText = stats.active_chats_1h;
+            }
+        }).catch(() => { });
+    }
+
+    // Button handlers
     chatBtn.onclick = () => {
         closeProfile();
         joinRoom(roomId);
@@ -494,34 +539,29 @@ function openProfile(roomId) {
         deleteFriend(e, roomId);
     };
 
-    // [v1.7.0] 관계 분석 버튼 핸들러
     const relBtn = document.getElementById("profile-rel-btn");
     if (relBtn) {
-        relBtn.onclick = () => {
-            // closeProfile(); // 프로필 유지하고 위에 띄울지, 닫고 띄울지 결정. 여기선 위로 덮도록 함.
-            openRelationshipView(roomId);
-        };
+        relBtn.onclick = () => openRelationshipView(roomId);
     }
 
-    // [v1.7.1] Life Details 버튼 핸들러 (관리자 전용)
     const lifeBtn = document.getElementById("profile-life-btn");
     if (lifeBtn) {
         if (isAdmin) {
             lifeBtn.style.display = "block";
-            lifeBtn.onclick = () => {
-                openLifeDetails(roomId);
-            };
+            lifeBtn.onclick = () => openLifeDetails(roomId);
         } else {
             lifeBtn.style.display = "none";
         }
     }
 
-    overlay.style.display = "flex";
+    // [v3.3.0] Full-page navigation
+    document.body.classList.add("is-profile");
+    const profilePage = document.getElementById("profile-page");
+    if (profilePage) profilePage.scrollTop = 0;
 }
 
 function closeProfile() {
-    const overlay = document.getElementById("profile-overlay");
-    if (overlay) overlay.style.display = "none";
+    document.body.classList.remove("is-profile");
 }
 
 // [v1.7.0] 이미지 라이트박스 제어
@@ -1222,92 +1262,6 @@ function generateDefaultAvatar(username) {
     }
 }
 
-// [v2.1.0] 친구 프로필 모달 (팔로우 기능 추가)
-async function showProfileModal(roomId) {
-    const f = friendsData.find(item => item.room_id === roomId);
-    if (!f) return;
-
-    // 모달 DOM 요소 가져오기
-    const modal = document.getElementById("profile-modal");
-    const img = document.getElementById("modal-profile-img");
-    const name = document.getElementById("modal-profile-name");
-    const status = document.getElementById("modal-profile-status");
-    const followBtn = document.getElementById("modal-follow-btn");
-
-    // 기본 정보 바인딩
-    img.src = f.profile_image_url || "";
-    name.innerText = f.name;
-    status.innerText = f.status === "online" ? "Online" : "Offline";
-    status.className = `status-badge ${f.status || "offline"}`;
-
-    document.getElementById("modal-profile-age").innerText = f.age ? `${f.age}세` : "-";
-    document.getElementById("modal-profile-job").innerText = f.job || "-";
-    document.getElementById("modal-profile-mbti").innerText = f.mbti || "-";
-    document.getElementById("modal-profile-hobby").innerText = f.hobby || "-";
-    document.getElementById("modal-profile-goal").innerText = f.goal || "-";
-    document.getElementById("modal-profile-intro").innerText = f.intro || "-";
-
-    // 팔로우 상태 확인 및 버튼 렌더링
-    // friendsData에 is_user_following이 없으면 false로 취급
-    const isFollowing = f.is_user_following === true;
-    updateFollowBtn(followBtn, isFollowing, f.persona_id);
-
-    modal.classList.add("show");
-}
-
-function updateFollowBtn(btn, isFollowing, personaId) {
-    if (isFollowing) {
-        btn.innerText = "팔로잉";
-        btn.style.backgroundColor = "#8e8e93"; // 회색
-        btn.style.color = "#fff";
-        btn.onclick = () => toggleFollow(personaId, false, btn);
-    } else {
-        btn.innerText = "팔로우";
-        btn.style.backgroundColor = "var(--blue)"; // 파란색
-        btn.style.color = "#fff";
-        btn.onclick = () => toggleFollow(personaId, true, btn);
-    }
-}
-
-async function toggleFollow(personaId, doFollow, btn) {
-    const url = doFollow ? "/api/follow" : "/api/unfollow";
-
-    // 낙관적 업데이트 (UI 먼저 변경)
-    updateFollowBtn(btn, doFollow, personaId);
-
-    try {
-        const res = await fetch(url, {
-            method: "POST",
-            headers: {
-                "Content-Type": "application/json",
-                "Authorization": `Bearer ${accessToken}`
-            },
-            body: JSON.stringify({ persona_id: personaId })
-        });
-
-        if (res.ok) {
-            const data = await res.json();
-            // 성공 시 친구 목록 데이터 갱신 (팔로우 상태 반영)
-            const f = friendsData.find(item => item.persona_id === personaId);
-            if (f) {
-                f.is_user_following = data.is_user_following;
-            }
-        } else {
-            // 실패 시 롤백
-            updateFollowBtn(btn, !doFollow, personaId);
-            alert("요청 처리에 실패했습니다.");
-        }
-    } catch (e) {
-        console.error(e);
-        updateFollowBtn(btn, !doFollow, personaId);
-        alert("네트워크 오류가 발생했습니다.");
-    }
-}
-
-function closeProfileModal() {
-    document.getElementById("profile-modal").classList.remove("show");
-}
-
 // 프로필 작성 화면 표시
 function showProfileSetup() {
     document.getElementById("auth-overlay").style.display = "none";
@@ -1723,6 +1677,141 @@ function closeConfirmDM() {
     pendingDmRoomId = null;
     const overlay = document.getElementById("dm-confirm-overlay");
     if (overlay) overlay.style.display = "none";
+}
+
+
+// ---------------------------------------------------------
+// [v4.0.0] EVE FACTORY: 배치 이브 생성
+// ---------------------------------------------------------
+
+function syncWeights(changed) {
+    const w = document.getElementById("weight-white");
+    const b = document.getElementById("weight-black");
+    const a = document.getElementById("weight-asian");
+
+    let wv = parseInt(w.value), bv = parseInt(b.value), av = parseInt(a.value);
+    const total = wv + bv + av;
+
+    // 합이 100을 초과하면 나머지 두 값을 비례 축소
+    if (total > 100) {
+        if (changed === 'white') {
+            const remain = 100 - wv;
+            const otherTotal = bv + av || 1;
+            bv = Math.round(bv / otherTotal * remain);
+            av = remain - bv;
+        } else if (changed === 'black') {
+            const remain = 100 - bv;
+            const otherTotal = wv + av || 1;
+            wv = Math.round(wv / otherTotal * remain);
+            av = remain - wv;
+        } else {
+            const remain = 100 - av;
+            const otherTotal = wv + bv || 1;
+            wv = Math.round(wv / otherTotal * remain);
+            bv = remain - wv;
+        }
+    }
+
+    w.value = Math.max(0, wv); b.value = Math.max(0, bv); a.value = Math.max(0, av);
+    document.getElementById("weight-white-val").textContent = w.value;
+    document.getElementById("weight-black-val").textContent = b.value;
+    document.getElementById("weight-asian-val").textContent = a.value;
+    document.getElementById("weight-sum").textContent = parseInt(w.value) + parseInt(b.value) + parseInt(a.value);
+}
+
+let batchPollingTimer = null;
+
+async function startBatchCreation() {
+    const count = parseInt(document.getElementById("batch-count").value);
+    const white = parseInt(document.getElementById("weight-white").value);
+    const black = parseInt(document.getElementById("weight-black").value);
+    const asian = parseInt(document.getElementById("weight-asian").value);
+
+    if (count < 1 || count > 200) { alert("1~200 사이로 입력하세요"); return; }
+
+    const btn = document.getElementById("batch-start-btn");
+    btn.disabled = true;
+    btn.textContent = "⏳ 생성 중...";
+
+    document.getElementById("batch-progress").style.display = "block";
+    document.getElementById("batch-result-list").innerHTML = "";
+    document.getElementById("batch-error-log").textContent = "";
+
+    try {
+        const res = await fetch("/admin/batch-create-eves", {
+            method: "POST",
+            headers: { "Content-Type": "application/json", "Authorization": `Bearer ${localStorage.getItem("token")}` },
+            body: JSON.stringify({ count, white, black, asian })
+        });
+        const data = await res.json();
+        if (!res.ok) { alert(data.detail || "오류"); btn.disabled = false; btn.textContent = "🚀 배치 생성 시작"; return; }
+
+        pollBatchStatus(data.job_id, count);
+    } catch (e) {
+        alert("요청 실패: " + e.message);
+        btn.disabled = false;
+        btn.textContent = "🚀 배치 생성 시작";
+    }
+}
+
+function pollBatchStatus(jobId, total) {
+    if (batchPollingTimer) clearInterval(batchPollingTimer);
+
+    batchPollingTimer = setInterval(async () => {
+        try {
+            const res = await fetch(`/admin/batch-status/${jobId}`, {
+                headers: { "Authorization": `Bearer ${localStorage.getItem("token")}` }
+            });
+            const data = await res.json();
+
+            const created = data.created || 0;
+            const failed = data.failed || 0;
+            const pct = Math.round((created + failed) / total * 100);
+
+            document.getElementById("batch-progress-text").textContent = `${created} / ${total} (실패: ${failed})`;
+            document.getElementById("batch-progress-pct").textContent = `${pct}%`;
+            document.getElementById("batch-progress-bar").style.width = `${pct}%`;
+
+            if (data.errors && data.errors.length > 0) {
+                document.getElementById("batch-error-log").textContent = data.errors.slice(-3).join("\n");
+            }
+
+            // 새로 생성된 이브 카드 렌더링
+            renderBatchResults(data.eves || []);
+
+            if (data.done) {
+                clearInterval(batchPollingTimer);
+                batchPollingTimer = null;
+
+                const btn = document.getElementById("batch-start-btn");
+                btn.disabled = false;
+                btn.textContent = "🚀 배치 생성 시작";
+
+                document.getElementById("batch-progress-pct").textContent = "✅ 완료!";
+                document.getElementById("batch-progress-bar").style.width = "100%";
+                document.getElementById("batch-progress-bar").style.background = "#34c759";
+            }
+        } catch (e) {
+            console.error("Polling error:", e);
+        }
+    }, 2000);
+}
+
+function renderBatchResults(eves) {
+    const container = document.getElementById("batch-result-list");
+    container.innerHTML = eves.map(e => `
+        <div style="display:flex; align-items:center; gap:10px; padding:8px; border-bottom:1px solid var(--bg-secondary);">
+            <img src="${e.profile_image_url || '/static/default_avatar.png'}" 
+                 style="width:36px; height:36px; border-radius:50%; object-fit:cover;">
+            <div style="flex:1;">
+                <div style="font-size:12px; font-weight:700;">${e.name}</div>
+                <div style="font-size:10px; color:var(--text-sub);">${e.age}세 ${e.gender} · ${e.mbti}</div>
+            </div>
+            <div style="font-size:9px; color:var(--text-sub);">
+                ${(e.feed_times || []).join(', ')}
+            </div>
+        </div>
+    `).join("");
 }
 
 // 초기 실행

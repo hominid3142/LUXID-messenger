@@ -67,6 +67,18 @@ class Persona(Base):
                      current_location_id = Column(Integer, ForeignKey("map_locations.id"), nullable=True)
                      current_location = relationship("MapLocation")
 
+                     # [v4.0.0] Social System
+                     face_base_url = Column(String, nullable=True)  # 얼굴 베이스 이미지 URL (i2i 파이프라인)
+                     feed_times = Column(JSON, default=[])           # ["11:00", "14:00", "17:00"]
+
+                     # [v3.0.0] Unified Memory System
+                     # 통합 기억 저장소: [{source_user_id, fact, is_public, timestamp}]
+                     shared_memory = Column(JSON, default=[])
+                     # 통합 일기장: [{date, content}]
+                     shared_journal = Column(JSON, default=[])
+                     # 사용자 목록: [{user_id, display_name, relationship, last_talked, memo}]
+                     user_registry = Column(JSON, default=[])
+
                      owner = relationship("User", back_populates="personas")
                      rooms = relationship("ChatRoom",
                                           back_populates="persona",
@@ -96,10 +108,6 @@ class ChatRoom(Base):
                      
                      # [v1.5.0 추가] 이브가 느끼는 사용자와의 관계
                      relationship_category = Column(String, default="낯선 사람")
-                     
-                     # [v2.1.0] 팔로잉 시스템 (양방향)
-                     is_user_following = Column(Boolean, default=False)  # 유저가 이브를 팔로우했는지
-                     is_eve_following = Column(Boolean, default=False)   # 이브가 유저를 팔로우(맞팔)했는지
 
                      owner = relationship("User", back_populates="rooms")
                      persona = relationship("Persona", back_populates="rooms")

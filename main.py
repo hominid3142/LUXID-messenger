@@ -17,7 +17,8 @@ import fal_client
 # 모듈화된 파일들에서 기능 임포트
 from database import engine, SessionLocal, Base
 from models import Persona, ChatRoom, User, PromptTemplate, SystemNotice, FeedPost, FeedComment, MapLocation
-from memory import KST, volatile_memory, get_volatile_state, get_date_info
+from memory import KST, volatile_memory, get_volatile_state, get_date_info, update_shared_memory, tick_info_slots, DIA_CATEGORIES
+from engine import build_ethnicity_prompt, build_face_base_prompt
 from engine import run_medium_thinking, run_short_thinking, run_utterance, generate_eve_visuals, generate_eve_nickname, client, MODEL_ID, debug_log_buffer, sync_eve_life
 from auth_utils import verify_password, get_password_hash, create_access_token, decode_access_token, update_user_tokens
 from scheduler import AEScheduler
@@ -333,6 +334,18 @@ async def register(data: dict = Body(...), db: Session = Depends(get_db)):
                 v_relationship=random.randint(20, 100)
             )
             db.add(new_room)
+        
+        # [v3.0.0] 이브의 user_registry에 새 유저 추가
+        registry = list(p.user_registry or [])
+        if not any(e.get('user_id') == new_user.id for e in registry):
+            registry.append({
+                "user_id": new_user.id,
+                "display_name": new_user.display_name or new_user.username,
+                "relationship": "낯선 사람",
+                "last_talked": None,
+                "memo": ""
+            })
+            p.user_registry = registry
     
     db.commit()
     return {"status": "success"}
@@ -874,6 +887,31 @@ async def websocket_endpoint(websocket: WebSocket, room_id: int):
     v_state = get_volatile_state(room_id, room)
     v_state['p_dict'] = p_dict
     
+    # [v3.0.0] 통합 기억 시스템: 현재 유저 ID와 페르소나 객체 참조 저장
+    v_state['current_user_id'] = current_user_obj.id
+    v_state['persona_id'] = p.id
+    
+    # [v3.0.0] user_registry의 last_talked 갱신
+    registry = list(p.user_registry or [])
+    user_found = False
+    for entry in registry:
+        if entry.get('user_id') == current_user_obj.id:
+            entry['last_talked'] = datetime.now(KST).strftime('%Y-%m-%d %H:%M')
+            if current_user_obj.display_name:
+                entry['display_name'] = current_user_obj.display_name
+            user_found = True
+            break
+    if not user_found:
+        registry.append({
+            "user_id": current_user_obj.id,
+            "display_name": current_user_obj.display_name or current_user_obj.username,
+            "relationship": room.relationship_category or "낯선 사람",
+            "last_talked": datetime.now(KST).strftime('%Y-%m-%d %H:%M'),
+            "memo": ""
+        })
+    p.user_registry = registry
+    db.commit()
+    
     # [v1.5.0] 사용자 프로필을 팩트 창고에 저장
     if current_user_obj.display_name:
         user_profile_fact = f"[사용자 프로필] 이름: {current_user_obj.display_name}"
@@ -931,6 +969,11 @@ async def websocket_endpoint(websocket: WebSocket, room_id: int):
                         v_state['status'] = "online"
                         v_state['is_ticking'] = True
                         v_state['activation_pending'] = False
+                        # [v3.5.0] DIA: 콜드스타트 - 모든 카테고리를 TTL=5로 활성화
+                        v_state['active_info_slots'] = {
+                            cat: {"ttl": 5, "reason": "cold_start"}
+                            for cat in DIA_CATEGORIES
+                        }
                         if websocket.client_state == WebSocketState.CONNECTED:
                             await websocket.send_json({"status": "online"})
 
@@ -969,6 +1012,9 @@ async def websocket_endpoint(websocket: WebSocket, room_id: int):
                     if not v_state['is_ticking']:
                         continue
 
+                    # [v3.5.0] DIA: 매 틱 TTL 자동 감소
+                    tick_info_slots(v_state)
+
                     current_tick = v_state['tick_counter']
                     consecutive_speaks = v_state['consecutive_speaks']
 
@@ -989,15 +1035,52 @@ async def websocket_endpoint(websocket: WebSocket, room_id: int):
                 tokens_used = 0
 
                 if current_tick == 19:
+                    # [v3.0.0] 통합 기억용 persona 객체 로드
+                    db_persona = db_room.persona
+                    
                     res_text, tokens = await run_medium_thinking(
                         v_state, p_dict, room_id, 
                         custom_prompt=prompts.get('medium_thinking'),
-                        model_id=target_model
+                        model_id=target_model,
+                        current_user_id=v_state.get('current_user_id'),
+                        persona=db_persona
                     )
                     tokens_used = tokens
                     db_room.fact_warehouse = v_state['fact_warehouse']
                     # [v1.5.0] 관계 카테고리 DB 동기화
                     db_room.relationship_category = v_state.get('relationship_category', '낯선 사람')
+                    
+                    # [v3.0.0] 통합 기억 업데이트 (shared_facts + private_facts)
+                    shared_facts = v_state.get('_last_shared_facts', [])
+                    private_facts = v_state.get('_last_private_facts', [])
+                    all_new_facts = shared_facts + private_facts
+                    if all_new_facts and db_persona:
+                        update_shared_memory(
+                            db, db_persona.id, all_new_facts,
+                            source_user_id=v_state.get('current_user_id')
+                        )
+                    
+                    # [v3.1.0] 대화 요약 저장 (category: conversation)
+                    conv_summary = v_state.get('_last_conversation_summary')
+                    if conv_summary and db_persona:
+                        summary_text = conv_summary.get('summary', '') if isinstance(conv_summary, dict) else str(conv_summary)
+                        is_public = conv_summary.get('is_public', True) if isinstance(conv_summary, dict) else True
+                        if summary_text:
+                            update_shared_memory(
+                                db, db_persona.id,
+                                [{"fact": summary_text, "is_public": is_public, "category": "conversation"}],
+                                source_user_id=v_state.get('current_user_id')
+                            )
+                    
+                    # [v3.0.0] user_registry 관계 동기화
+                    if db_persona:
+                        registry = list(db_persona.user_registry or [])
+                        for entry in registry:
+                            if entry.get('user_id') == v_state.get('current_user_id'):
+                                entry['relationship'] = v_state.get('relationship_category', '낯선 사람')
+                                break
+                        db_persona.user_registry = registry
+                    
                     db.commit()
                 elif current_tick != 0 and current_tick % 5 == 0:
                     res_text, tokens = await run_short_thinking(
@@ -1036,10 +1119,14 @@ async def websocket_endpoint(websocket: WebSocket, room_id: int):
                             datetime.now(KST) -
                             v_state['last_user_ts']).total_seconds()
                         if time_since_user < 20 or current_tick % 3 == 0:
+                            # [v3.0.0] 통합 기억용 persona 로드
+                            db_persona_utt = db_room.persona
                             inference_res, tokens = await run_utterance(
                                 v_state, p_dict, room_id,
                                 custom_prompt=prompts.get('utterance'),
-                                model_id=target_model
+                                model_id=target_model,
+                                current_user_id=v_state.get('current_user_id'),
+                                persona=db_persona_utt
                             )
                             tokens_used = tokens
                         else:
@@ -1251,6 +1338,21 @@ async def add_friend(current_user: User = Depends(get_current_user),
             "sleep_time": "23:00"
         }
 
+    # [v3.0.0] user_registry 초기화: 모든 기존 유저를 등록
+    all_users = db.query(User).all()
+    initial_registry = []
+    for u in all_users:
+        initial_registry.append({
+            "user_id": u.id,
+            "display_name": u.display_name or u.username,
+            "relationship": "낯선 사람",
+            "last_talked": None,
+            "memo": ""
+        })
+    p.user_registry = initial_registry
+    p.shared_memory = []
+    p.shared_journal = []
+    
     db.add(p)
     db.commit()
     db.refresh(p)
@@ -1259,7 +1361,6 @@ async def add_friend(current_user: User = Depends(get_current_user),
     update_user_tokens(db, current_user.id, life_tokens + visual_tokens)
 
     # [v2.0.0] Shared Universe: 생성된 이브를 모든 유저의 채팅방에 추가
-    all_users = db.query(User).all()
     current_room_id = None # 생성자에게 리턴할 room_id
 
     for u in all_users:
@@ -1292,10 +1393,12 @@ async def add_friend(current_user: User = Depends(get_current_user),
                 "daily_schedule": p.daily_schedule
             }
             
-            # 비동기 처리를 위해 여기서 await 하지 않고 스케줄링하거나, 
-            # 일단 생성자에게만 바로 응답하기 위해 로직 분리. 
-            # (기존 로직 유지를 위해 그대로 await 실행)
-            _, tokens = await run_medium_thinking(v_state, final_p_dict, room.id)
+            # [v3.0.0] persona 객체 전달
+            _, tokens = await run_medium_thinking(
+                v_state, final_p_dict, room.id,
+                current_user_id=current_user.id,
+                persona=p
+            )
             update_user_tokens(db, current_user.id, tokens)
             room.fact_warehouse = v_state['fact_warehouse']
             db.commit() 
@@ -1311,6 +1414,7 @@ def get_friends(current_user: User = Depends(get_current_user),
         ChatRoom.owner_id == current_user.id).all()
     return [{
         "room_id": r.id,
+        "persona_id": r.persona.id,
         "name": r.persona.name,
         "age": r.persona.age,
         "gender": r.persona.gender,
@@ -1328,10 +1432,43 @@ def get_friends(current_user: User = Depends(get_current_user),
         "v_relationship": r.v_relationship,
         "history": r.history,
         "relationship_category": r.relationship_category,
-        "daily_schedule": r.persona.daily_schedule,
-        "is_user_following": r.is_user_following,
-        "is_eve_following": r.is_eve_following
+        "daily_schedule": r.persona.daily_schedule
     } for r in rooms]
+
+
+# [v3.2.0] 이브 프로필 통계 API
+@app.get("/persona/{persona_id}/stats")
+def get_persona_stats(persona_id: int,
+                      current_user: User = Depends(get_current_user),
+                      db: Session = Depends(get_db)):
+    if not current_user:
+        raise HTTPException(status_code=401)
+    persona = db.query(Persona).filter(Persona.id == persona_id).first()
+    if not persona:
+        raise HTTPException(status_code=404)
+
+    # 총 친구 수 = 이 이브와 연결된 ChatRoom 수
+    total_friends = db.query(ChatRoom).filter(ChatRoom.persona_id == persona_id).count()
+
+    # 최근 1시간 대화 수 = user_registry에서 last_talked가 1시간 이내인 수
+    active_chats_1h = 0
+    now = datetime.now(KST)
+    one_hour_ago = now - timedelta(hours=1)
+    registry = list(persona.user_registry or [])
+    for entry in registry:
+        lt = entry.get("last_talked")
+        if lt:
+            try:
+                talked_time = datetime.strptime(lt, "%Y-%m-%d %H:%M").replace(tzinfo=KST)
+                if talked_time >= one_hour_ago:
+                    active_chats_1h += 1
+            except (ValueError, TypeError):
+                pass
+
+    return {
+        "total_friends": total_friends,
+        "active_chats_1h": active_chats_1h
+    }
 
 
 @app.post("/update-params/{room_id}")
@@ -1468,8 +1605,7 @@ async def get_world_map(current_user: User = Depends(get_current_user), db: Sess
                     "image": p.profile_image_url,
                     "district": loc.district,
                     "location_name": loc.name,
-                    "room_id": room.id,
-                    "is_user_following": room.is_user_following
+                    "room_id": room.id
                 })
 
     return {
@@ -1556,7 +1692,241 @@ async def get_world_map(current_user: User = Depends(get_current_user), db: Sess
     }
 
 
+# ---------------------------------------------------------
+# [v4.0.0] 관리자: 이브 배치 생성 시스템
+# ---------------------------------------------------------
+
+batch_jobs = {}  # { job_id: { total, created, failed, errors, done, eves } }
+
+
+class BatchCreateRequest(BaseModel):
+    count: int
+    white: int = 33
+    black: int = 33
+    asian: int = 34
+
+
+async def create_single_eve_for_batch(white: int, black: int, asian: int, db: Session) -> dict:
+    """단일 이브 생성 (배치용). add_friend 로직 기반, owner_id=None."""
+    from engine import generate_eve_visuals, generate_eve_nickname
+    
+    mbtis = [
+        "ISTJ", "ISFJ", "INFJ", "INTJ", "ISTP", "ISFP", "INFP", "INTP",
+        "ESTP", "ESFP", "ENFP", "ENTP", "ESTJ", "ESFJ", "ENFJ", "ENTJ"
+    ]
+    
+    gender = random.choice(["남성", "여성"])
+    age = random.randint(19, 36)
+    mbti = random.choice(mbtis)
+    p_seriousness = random.randint(1, 10)
+    p_friendliness = random.randint(1, 10)
+    p_rationality = random.randint(1, 10)
+    p_slang = random.randint(1, 10)
+    
+    # 라이프 데이터 생성
+    temp_p_dict = {
+        "name": "Member", "age": age, "gender": gender, "mbti": mbti,
+        "p_seriousness": p_seriousness, "p_friendliness": p_friendliness,
+        "p_rationality": p_rationality, "p_slang": p_slang
+    }
+    
+    life_data, _ = await generate_eve_life_details(temp_p_dict)
+    profile_details = {}
+    daily_schedule = {}
+    job = "직장인"
+    intro = "밝은 성격"
+    
+    if life_data:
+        profile_details = life_data.get('profile_details', {})
+        daily_schedule = life_data.get('daily_schedule', {})
+        job = profile_details.get('job', '직장인')
+        intro = profile_details.get('intro', '밝은 성격')
+    
+    # 닉네임 생성
+    temp_p_dict['job'] = job
+    temp_p_dict['intro'] = intro
+    name = await generate_eve_nickname(temp_p_dict)
+    
+    # 인종 가중치 적용 프롬프트 생성
+    ethnicity_prompt = build_ethnicity_prompt(white, black, asian)
+    
+    # Step 1: 얼굴 베이스 생성 (passport photo)
+    face_base_prompt = build_face_base_prompt(ethnicity_prompt, gender, age)
+    face_base_url = None
+    try:
+        result = await asyncio.to_thread(fal_client.subscribe,
+                                         "xai/grok-imagine-image",
+                                         arguments={
+                                             "prompt": face_base_prompt,
+                                             "image_size": "square"
+                                         })
+        if result and 'images' in result:
+            face_base_url = result['images'][0]['url']
+    except Exception as e:
+        print(f"[BATCH] Face Base Error for {name}: {e}")
+    
+    # Step 2: 프로필 이미지 생성 (i2i with face base, or fallback to direct generation)
+    p_dict_for_visuals = {"age": age, "gender": gender, "mbti": mbti, "job": job, "intro": intro}
+    image_prompt, _ = await generate_eve_visuals(p_dict_for_visuals)
+    
+    profile_image_url = None
+    if face_base_url:
+        # i2i: 얼굴 베이스 + 프로필 프롬프트
+        try:
+            result = await asyncio.to_thread(fal_client.subscribe,
+                                             "xai/grok-imagine-image/edit",
+                                             arguments={
+                                                 "prompt": image_prompt,
+                                                 "image_url": face_base_url,
+                                                 "image_size": "square"
+                                             })
+            if result and 'images' in result:
+                profile_image_url = result['images'][0]['url']
+        except Exception as e:
+            print(f"[BATCH] i2i Profile Error for {name}: {e}, falling back to direct gen")
+    
+    # Fallback: 직접 생성
+    if not profile_image_url:
+        try:
+            result = await asyncio.to_thread(fal_client.subscribe,
+                                             "xai/grok-imagine-image",
+                                             arguments={
+                                                 "prompt": image_prompt,
+                                                 "image_size": "square"
+                                             })
+            if result and 'images' in result:
+                profile_image_url = result['images'][0]['url']
+        except Exception as e:
+            print(f"[BATCH] Fallback Image Error for {name}: {e}")
+    
+    # 피드 활동 시간 랜덤 생성 (하루 3번)
+    hours = sorted(random.sample(range(8, 23), 3))
+    feed_times = [f"{h:02d}:00" for h in hours]
+    
+    # 일정 기본값
+    if not daily_schedule:
+        daily_schedule = {
+            "wake_time": "08:00",
+            "daily_tasks": ["일상 활동", "여가 시간"],
+            "sleep_time": "23:00"
+        }
+    
+    # Persona 생성 (owner_id=None → 공유 이브)
+    p = Persona(
+        owner_id=None,
+        name=name, age=age, gender=gender, mbti=mbti,
+        p_seriousness=p_seriousness, p_friendliness=p_friendliness,
+        p_rationality=p_rationality, p_slang=p_slang,
+        profile_image_url=profile_image_url,
+        image_prompt=image_prompt,
+        face_base_url=face_base_url,
+        feed_times=feed_times,
+        profile_details=profile_details,
+        daily_schedule=daily_schedule,
+        last_schedule_date=datetime.now(KST),
+        shared_memory=[], shared_journal=[], user_registry=[]
+    )
+    db.add(p)
+    db.commit()
+    db.refresh(p)
+    
+    # 모든 기존 유저에 대해 ChatRoom 생성
+    all_users = db.query(User).all()
+    for u in all_users:
+        room = ChatRoom(
+            owner_id=u.id, persona_id=p.id,
+            v_likeability=random.randint(20, 100),
+            v_erotic=random.randint(10, 40),
+            v_v_mood=random.randint(20, 100),
+            v_relationship=random.randint(20, 100)
+        )
+        db.add(room)
+    db.commit()
+    
+    return {
+        "id": p.id, "name": p.name, "age": p.age, "gender": p.gender,
+        "mbti": p.mbti, "profile_image_url": p.profile_image_url,
+        "face_base_url": p.face_base_url, "feed_times": p.feed_times
+    }
+
+
+async def run_batch_creation(job_id: str, count: int, white: int, black: int, asian: int):
+    """백그라운드 태스크: 7명씩 병렬 생성"""
+    BATCH_SIZE = 7
+    created = 0
+    
+    while created < count:
+        batch_size = min(BATCH_SIZE, count - created)
+        db = SessionLocal()
+        try:
+            tasks = [create_single_eve_for_batch(white, black, asian, db) for _ in range(batch_size)]
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            
+            for r in results:
+                if isinstance(r, Exception):
+                    batch_jobs[job_id]['failed'] += 1
+                    batch_jobs[job_id]['errors'].append(str(r)[:100])
+                    print(f"[BATCH] Eve creation failed: {r}")
+                else:
+                    batch_jobs[job_id]['created'] += 1
+                    batch_jobs[job_id]['eves'].append(r)
+                    created += 1
+        except Exception as e:
+            print(f"[BATCH] Batch error: {e}")
+            batch_jobs[job_id]['errors'].append(str(e)[:100])
+        finally:
+            db.close()
+        
+        # API rate limit 방지
+        if created < count:
+            await asyncio.sleep(3)
+    
+    batch_jobs[job_id]['done'] = True
+    print(f"[BATCH] Job {job_id} completed: {batch_jobs[job_id]['created']}/{count}")
+
+
+@app.post("/admin/batch-create-eves")
+async def admin_batch_create_eves(
+    req: BatchCreateRequest,
+    current_user: User = Depends(get_current_user)
+):
+    print(f"[DEBUG] User={current_user.username if current_user else 'None'}, Admin={current_user.is_admin if current_user else 'None'}")
+    if not current_user or not current_user.is_admin:
+        raise HTTPException(status_code=403, detail="Admin only")
+    
+    if req.count < 1 or req.count > 200:
+        raise HTTPException(status_code=400, detail="Count must be 1-200")
+    
+    job_id = f"batch_{int(datetime.now().timestamp())}"
+    batch_jobs[job_id] = {
+        "total": req.count,
+        "created": 0,
+        "failed": 0,
+        "errors": [],
+        "done": False,
+        "eves": []
+    }
+    
+    # 백그라운드 태스크로 실행
+    asyncio.create_task(run_batch_creation(job_id, req.count, req.white, req.black, req.asian))
+    
+    return {"job_id": job_id, "total": req.count}
+
+
+@app.get("/admin/batch-status/{job_id}")
+async def admin_batch_status(job_id: str, current_user: User = Depends(get_current_user)):
+    if not current_user or not current_user.is_admin:
+        raise HTTPException(status_code=403, detail="Admin only")
+    
+    job = batch_jobs.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    
+    return job
+
+
 @app.get("/", response_class=HTMLResponse)
+
 async def get_ui():
     # [v1.6.0] 매 요청마다 타임스탬프 생성하여 정적 자원 강제 리로드
     import time

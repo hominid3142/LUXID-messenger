@@ -169,39 +169,65 @@
             </div>
         </div>
 
-        <!-- 프로필 상세 뷰 레이어 - 틴더 스타일 정보 반영 -->
-        <div id="profile-overlay" class="overlay-view" style="display: none">
-            <div class="profile-card">
-                <div class="profile-close" onclick="closeProfile()">✕</div>
-                <div id="profile-avatar" class="profile-avatar-large">
-                    ?
+        <!-- [v3.3.0] Full-Page Tinder-Style Profile View -->
+        <div id="profile-page">
+            <!-- Hero Image Section -->
+            <div id="profile-hero-image" class="profile-hero-img">
+                <div class="profile-hero-back" onclick="closeProfile()">〈</div>
+                <div class="profile-hero-gradient"></div>
+                <div class="profile-hero-overlay-text">
+                    <div class="profile-name-row">
+                        <span id="profile-name" class="profile-hero-name">이름</span>
+                        <span id="profile-mbti" class="profile-hero-mbti">MBTI</span>
+                    </div>
+                    <div id="profile-hook" class="profile-hero-hook">"한 줄 어필"</div>
+                </div>
+            </div>
+
+            <!-- Scrollable Content Below Image -->
+            <div class="profile-page-content">
+                <!-- Stats Row -->
+                <div class="profile-stats-row">
+                    <div class="stat-item">
+                        <span id="profile-stat-friends" class="stat-number">0</span>
+                        <span class="stat-label">친구</span>
+                    </div>
+                    <div class="stat-divider"></div>
+                    <div class="stat-item">
+                        <span id="profile-stat-active" class="stat-number">0</span>
+                        <span class="stat-label">대화 중</span>
+                    </div>
+                    <div class="stat-divider"></div>
+                    <div class="stat-item">
+                        <span id="profile-stat-rel" class="stat-badge">분석 중</span>
+                        <span class="stat-label">관계</span>
+                    </div>
                 </div>
 
-                <div id="profile-hook" class="profile-hook-text">
-                    "한 줄 어필"
+                <!-- Primary Action Buttons -->
+                <div class="profile-primary-actions">
+                    <button class="profile-btn-dm" id="profile-chat-btn">
+                        💬 DM 보내기
+                    </button>
+                    <button class="profile-btn-rel" id="profile-rel-btn">
+                        💞
+                    </button>
                 </div>
 
-                <div class="modal-body">
-                    <div class="user-profile-header">
-                        <img id="modal-profile-img" src="" alt="Profile Image" />
-                        <div class="user-profile-info">
-                            <div id="modal-profile-name" class="modal-nickname">Nickname</div>
-                            <div id="modal-profile-status" class="status-badge">Online</div>
-                        </div>
+                <!-- Bio Section -->
+                <div class="profile-section">
+                    <div class="profile-section-title">소개</div>
+                    <div id="profile-intro" class="profile-intro">
+                        안녕하세요, LUXID에 살고 있어요.
                     </div>
+                </div>
 
-                    <!-- [v2.1.0] 팔로우 버튼 추가 -->
-                    <div style="margin-top: 12px; margin-bottom: 20px; text-align: center;">
-                        <button id="modal-follow-btn" class="primary-btn"
-                            style="width: 100%; border-radius: 12px; font-weight: 600;">
-                            팔로우
-                        </button>
-                    </div>
-
-                    <div class="profile-details-grid">
-                        <div class="detail-item">
-                            <label>나이</label>
-                            <span id="modal-profile-age">-</span>
+                <div class="profile-section">
+                    <div class="profile-section-title">정보</div>
+                    <div class="profile-detail-grid">
+                        <div class="p-detail-item">
+                            <span class="label">💼 직업</span>
+                            <span id="profile-job" class="val">-</span>
                         </div>
                         <div class="p-detail-item">
                             <span class="label">✨ 목표</span>
@@ -212,36 +238,29 @@
                             <span id="profile-lifestyle" class="val">-</span>
                         </div>
                     </div>
+                </div>
 
+                <div class="profile-section">
+                    <div class="profile-section-title">관심사</div>
                     <div class="profile-interests-wrap" id="profile-interests">
                         <!-- 관심사 태그 생성부 -->
                     </div>
+                </div>
 
+                <div class="profile-section">
                     <div class="profile-tmi-box">
                         <span class="label">💡 TMI:</span>
                         <span id="profile-tmi">-</span>
                     </div>
                 </div>
 
-                <div class="profile-actions" style="flex-direction: column; gap: 8px;">
-                    <div style="display: flex; gap: 8px; width: 100%;">
-                        <button class="profile-btn-chat" id="profile-chat-btn" style="flex: 1;">
-                            대화하기
-                        </button>
-                        <button class="profile-btn-delete" id="profile-delete-btn"
-                            style="width: auto; padding: 0 15px;">
-                            🗑️
-                        </button>
-                    </div>
-                    <!-- [v1.7.0] 관계 분석 버튼 추가 -->
-                    <button class="profile-btn-chat" id="profile-rel-btn"
-                        style="width: 100%; background: var(--bg-secondary); color: var(--text-main); border: 1px solid var(--border);">
-                        💞 나와의 관계
-                    </button>
-                    <!-- [v1.7.1] 관리자 전용: Life Details 버튼 -->
-                    <button class="profile-btn-chat admin-only-btn" id="profile-life-btn"
-                        style="width: 100%; background: var(--bg-secondary); color: var(--text-main); border: 1px solid var(--border); display: none;">
+                <!-- Secondary Actions -->
+                <div class="profile-secondary-actions">
+                    <button class="profile-btn-secondary" id="profile-life-btn" style="display: none;">
                         📅 Life Details
+                    </button>
+                    <button class="profile-btn-danger" id="profile-delete-btn">
+                        🗑️ 삭제
                     </button>
                 </div>
             </div>
@@ -385,7 +404,7 @@
                 <span class="icon">👥</span>
                 <span class="label">친구</span>
             </div>
-            <div class="nav-item" onclick="switchMobileView('chat')">
+            <div class="nav-item" onclick="switchMobileView('chats')">
                 <span class="icon">💬</span>
                 <span class="label">채팅</span>
             </div>
@@ -530,6 +549,7 @@
                 <div id="atab-status" class="atab active" onclick="switchAdminTab('status')">EVV STATUS</div>
                 <div id="atab-users" class="atab" onclick="switchAdminTab('users')">USER ADMIN</div>
                 <div id="atab-notice" class="atab" onclick="switchAdminTab('notice')">NOTICE</div>
+                <div id="atab-factory" class="atab" onclick="switchAdminTab('factory')">EVE FACTORY</div>
             </div>
 
             <!-- 1. EVV STATUS: 브라우저 -> 제어 2단계 구조 -->
@@ -731,6 +751,64 @@
                     <textarea id="global-notice-content" placeholder="메시지 내용을 입력하세요. 모든 사용자에게 시스템 알림으로 전송됩니다."
                         class="admin-textarea" style="height:200px;"></textarea>
                     <button class="commit-btn" onclick="sendGlobalNotice()">BROADCAST TO ALL ROOMS</button>
+                </div>
+            </div>
+
+            <!-- 4. EVE FACTORY: 배치 이브 생성 -->
+            <div id="admin-factory-view" style="display:none;">
+                <div class="panel-title">Eve Batch Creator</div>
+                <div class="admin-box" style="display:flex; flex-direction:column; gap:16px;">
+                    <div class="panel-label">POPULATION</div>
+                    <div style="display:flex; align-items:center; gap:12px;">
+                        <input type="number" id="batch-count" value="10" min="1" max="200" class="admin-input-text"
+                            style="width:80px; text-align:center;">
+                        <span style="font-size:12px; color:var(--text-sub);">명 생성 (최대 200)</span>
+                    </div>
+
+                    <div class="panel-label">ETHNICITY WEIGHT</div>
+                    <div style="display:flex; flex-direction:column; gap:8px;">
+                        <div style="display:flex; align-items:center; gap:8px;">
+                            <span style="font-size:11px; width:50px; color:var(--text-sub);">백인</span>
+                            <input type="range" id="weight-white" min="0" max="100" value="20"
+                                oninput="syncWeights('white')" style="flex:1;">
+                            <span id="weight-white-val" style="font-size:12px; width:35px; text-align:right;">20</span>
+                        </div>
+                        <div style="display:flex; align-items:center; gap:8px;">
+                            <span style="font-size:11px; width:50px; color:var(--text-sub);">흑인</span>
+                            <input type="range" id="weight-black" min="0" max="100" value="10"
+                                oninput="syncWeights('black')" style="flex:1;">
+                            <span id="weight-black-val" style="font-size:12px; width:35px; text-align:right;">10</span>
+                        </div>
+                        <div style="display:flex; align-items:center; gap:8px;">
+                            <span style="font-size:11px; width:50px; color:var(--text-sub);">동양인</span>
+                            <input type="range" id="weight-asian" min="0" max="100" value="70"
+                                oninput="syncWeights('asian')" style="flex:1;">
+                            <span id="weight-asian-val" style="font-size:12px; width:35px; text-align:right;">70</span>
+                        </div>
+                        <div style="font-size:11px; color:var(--text-sub); text-align:right;">
+                            합계: <span id="weight-sum">100</span> (자동 조정됨)
+                        </div>
+                    </div>
+
+                    <button class="commit-btn" id="batch-start-btn" onclick="startBatchCreation()">🚀 배치 생성 시작</button>
+
+                    <div id="batch-progress" style="display:none;">
+                        <div class="panel-label">PROGRESS</div>
+                        <div style="background:var(--bg-secondary); border-radius:8px; padding:12px;">
+                            <div style="display:flex; justify-content:space-between; margin-bottom:8px;">
+                                <span id="batch-progress-text" style="font-size:12px;">0 / 0</span>
+                                <span id="batch-progress-pct" style="font-size:12px; color:var(--accent);">0%</span>
+                            </div>
+                            <div style="background:var(--bg-primary); border-radius:4px; height:6px; overflow:hidden;">
+                                <div id="batch-progress-bar"
+                                    style="height:100%; background:var(--accent); width:0%; transition:width 0.3s;">
+                                </div>
+                            </div>
+                            <div id="batch-error-log" style="font-size:10px; color:#ff6b6b; margin-top:8px;"></div>
+                        </div>
+                    </div>
+
+                    <div id="batch-result-list" style="max-height:300px; overflow-y:auto;"></div>
                 </div>
             </div>
 
