@@ -8,7 +8,7 @@ from dotenv import load_dotenv
 from google import genai
 from sqlalchemy.orm import Session
 from memory import KST, get_date_info, get_volatile_state, get_shared_memory_context, get_user_registry_context, build_dynamic_context, tick_info_slots, DIA_CATEGORIES
-from models import ChatRoom, Persona
+from models import ChatRoom, Persona, EveRelationship
 from auth_utils import update_user_tokens
 
 # .env 파일 로드
@@ -17,6 +17,7 @@ load_dotenv()
 # 2. 엔진 설정
 client = genai.Client(api_key=os.environ.get("GOOGLE_API_KEY"))
 MODEL_ID = "gemini-3-flash-preview"
+FEED_IMAGE_MODEL = "fal-ai/flux-2"
 
 # [v1.4.1 추가] 개발자용 디버그 로그 버퍼 (최근 50개 유지)
 debug_log_buffer = []
@@ -232,6 +233,8 @@ async def run_short_thinking(v_state, p_dict, room_id, custom_prompt=None, model
     date_info = get_date_info()
     # [v3.5.0] DIA: 현재 활성 정보 슬롯 현황
     active_slots = v_state.get('active_info_slots', {})
+    if not isinstance(active_slots, dict):
+        active_slots = {}
     active_slots_str = json.dumps(list(active_slots.keys())) if active_slots else "없음"
     available_cats = json.dumps(DIA_CATEGORIES)
 
@@ -308,40 +311,60 @@ async def run_short_thinking(v_state, p_dict, room_id, custom_prompt=None, model
         capture_debug_log(room_id, "SHORT", target_model, final_prompt, raw_text, tokens)
 
         async with v_state['lock']:
-            v_state['short_term_logs'].append(data['short_feeling_record'])
-            v_state['short_term_plan'] = data['short_term_plan']
+            short_feeling_record = data.get('short_feeling_record', 'Sensing...')
+            short_term_plan = data.get('short_term_plan', v_state.get('short_term_plan', '상황 파악 중'))
+
+            v_state['short_term_logs'].append(short_feeling_record)
+            v_state['short_term_plan'] = short_term_plan
             v_state['last_short_history_len'] = len(v_state['ram_history'])
             
             # 상태 파라미터 업데이트 (범위 제한 적용)
-            v_state['v_likeability'] = max(0, min(100, v_state['v_likeability'] + data.get('v_likeability_change', 0)))
-            v_state['v_erotic'] = max(0, min(100, v_state['v_erotic'] + data.get('v_erotic_change', 0)))
-            v_state['v_v_mood'] = max(0, min(100, v_state['v_v_mood'] + data.get('v_v_mood_change', 0)))
-            v_state['v_relationship'] = v_state['v_relationship'] + data.get('v_relationship_change', 0)
+            def _safe_delta(value, default=0):
+                try:
+                    return int(value)
+                except (TypeError, ValueError):
+                    return default
+
+            v_state['v_likeability'] = max(0, min(100, v_state['v_likeability'] + _safe_delta(data.get('v_likeability_change', 0))))
+            v_state['v_erotic'] = max(0, min(100, v_state['v_erotic'] + _safe_delta(data.get('v_erotic_change', 0))))
+            v_state['v_v_mood'] = max(0, min(100, v_state['v_v_mood'] + _safe_delta(data.get('v_v_mood_change', 0))))
+            v_state['v_relationship'] = v_state['v_relationship'] + _safe_delta(data.get('v_relationship_change', 0))
             
             # 오프라인 전환 플래그 저장
             v_state['ai_wants_offline'] = data.get('go_offline', False)
             
             # [v3.5.0] DIA: 정보 슬롯 업데이트
             slots = v_state.get('active_info_slots', {})
+            if not isinstance(slots, dict):
+                slots = {}
             
             # 해제 요청 처리
-            for cat in data.get('info_dismissals', []):
-                if cat in slots:
-                    del slots[cat]
+            dismissals = data.get('info_dismissals', [])
+            if isinstance(dismissals, list):
+                for cat in dismissals:
+                    if isinstance(cat, str) and cat in slots:
+                        del slots[cat]
             
             # 활성화 요청 처리
-            for req in data.get('info_requests', []):
-                cat = req.get('category', '')
-                ttl = min(max(req.get('ttl', 3), 1), 5)  # TTL 범위: 1~5
-                if cat in DIA_CATEGORIES:
-                    slots[cat] = {"ttl": ttl, "reason": req.get('reason', '')}
+            requests = data.get('info_requests', [])
+            if isinstance(requests, list):
+                for req in requests:
+                    if not isinstance(req, dict):
+                        continue
+                    cat = req.get('category', '')
+                    if cat not in DIA_CATEGORIES:
+                        continue
+                    try:
+                        ttl = int(req.get('ttl', 3))
+                    except (TypeError, ValueError):
+                        ttl = 3
+                    ttl = min(max(ttl, 1), 5)  # TTL 범위: 1~5
+                    reason = req.get('reason', '')
+                    slots[cat] = {"ttl": ttl, "reason": reason if isinstance(reason, str) else str(reason)}
             
             v_state['active_info_slots'] = slots
             
-        return f"[TACTICS] {data['short_feeling_record']}", tokens
-    except Exception as e:
-        capture_debug_log(room_id, "SHORT_ERROR", target_model, final_prompt, str(e), 0)
-        return "[TACTICS] Sensing...", 0
+        return f"[TACTICS] {short_feeling_record}", tokens
     except Exception as e:
         capture_debug_log(room_id, "SHORT_ERROR", target_model, final_prompt, str(e), 0)
         return "[TACTICS] Sensing...", 0
@@ -383,7 +406,7 @@ async def generate_eve_nickname(p_dict):
 async def generate_eve_visuals(p_dict):
     # [Hardcoded Prompt Mode]
     # 사용자의 요청으로 AI 프롬프트 생성을 우회하고 하드코딩된 템플릿을 사용합니다.
-    hardcoded_prompt = f"candid iPhone raw photo, ultra realistic, low quality, natural random Korean SNS profile image of average {p_dict['mbti']} {p_dict['age']} years old Korean {'man' if p_dict['gender'] == '남성' else 'woman'}, ultrarealistic texture, low qualoty snapshot, casual daily look, cafe background"
+    hardcoded_prompt = f"candid iPhone raw photo, ultra realistic, low quality, natural random Korean SNS profile image of average {p_dict['mbti']} {p_dict['age']} years old Korean {'man' if p_dict['gender'] == '남성' else 'woman'}, ultrarealistic texture, low quality snapshot, casual daily look"
     return hardcoded_prompt, 0
 
     """제미나이를 이용해 이브의 프로필을 바탕으로 최적의 이미지 생성 프롬프트를 작성합니다."""
@@ -597,39 +620,596 @@ async def sync_eve_life(room_id, db: Session):
     
     return None
 
-
 # ---------------------------------------------------------
-# [v4.0.0] Social System: 배치 이브 생성 유틸리티
+# [Phase 2] SNS 피드 자동 생성 엔진
 # ---------------------------------------------------------
 
-def build_ethnicity_prompt(white: int, black: int, asian: int) -> str:
+async def generate_feed_activity(eves_batch: list[dict], current_feed: list[dict]) -> list[dict]:
     """
-    인종 가중치에서 ±1~5 랜덤 진동 후 합이 100이 되도록 정규화.
-    마지막 값 = 100 - 나머지 합 (오차 보정)
+    최대 10명의 이브 정보 + 현재 피드 전체를 인풋으로 받아
+    각 이브가 무엇을 할지 한 번의 인퍼런스로 결정 (post, comment).
     """
-    def jitter(v): return max(0, v + random.randint(-5, 5))
-    w, b, a = jitter(white), jitter(black), jitter(asian)
-    total = w + b + a
-    if total == 0:
-        w, b, a = 33, 33, 34
-    else:
-        w = round(w / total * 100)
-        b = round(b / total * 100)
-        a = 100 - w - b
-    
-    # 가중치가 가장 높은 인종을 주(primary)로 선택
-    parts = []
-    if w > 0: parts.append(f"Caucasian appearance ({w}% influence)")
-    if b > 0: parts.append(f"Black/African appearance ({b}% influence)")
-    if a > 0: parts.append(f"East Asian appearance ({a}% influence)")
-    return ", ".join(parts)
+    if not eves_batch: return []
 
+    current_time_kst = datetime.now(KST).strftime("%Y-%m-%d %H:%M")
+    eves_info = json.dumps([{
+        "id": e["id"],
+        "name": e["name"],
+        "mbti": e["mbti"],
+        "profile_details": e.get("profile_details", ""),
+        "current_time_kst": e.get("current_time_kst", current_time_kst),
+        "today_schedule": e.get("today_schedule", {}),
+        "related_users": e.get("related_users", []),
+        "related_eves": e.get("related_eves", []),
+        "recent_user_chats": e.get("recent_user_chats", []),
+        "recent_eve_chats": e.get("recent_eve_chats", [])
+    } for e in eves_batch], ensure_ascii=False)
 
-def build_face_base_prompt(ethnicity_prompt: str, gender: str, age: int) -> str:
-    """얼굴 베이스용 패스포트 사진 프롬프트 생성"""
-    gender_en = "woman" if gender == "여성" else "man"
-    return (
-        f"passport photo, front facing, {ethnicity_prompt}, "
-        f"{age} year old {gender_en}, neutral expression, "
-        f"white background, sharp focus, studio lighting, ultrarealistic"
+    feed_info = json.dumps([{
+        "id": f.id,
+        "author_name": f.persona.name if f.persona else ("User" if f.user else "Unknown"),
+        "persona_id": f.persona_id,
+        "content": f.content,
+        "time": str(f.created_at)
+    } for f in current_feed], ensure_ascii=False)
+
+    taggable = {}
+    for e in eves_batch:
+        try:
+            taggable[int(e["id"])] = e.get("name") or f"eve-{e['id']}"
+        except Exception:
+            continue
+    for f in current_feed:
+        pid = getattr(f, "persona_id", None)
+        if not pid:
+            continue
+        if getattr(f, "persona", None) and getattr(f.persona, "name", None):
+            taggable[int(pid)] = f.persona.name
+        elif int(pid) not in taggable:
+            taggable[int(pid)] = f"eve-{pid}"
+    taggable_eves = json.dumps(
+        [{"persona_id": pid, "name": name} for pid, name in sorted(taggable.items())],
+        ensure_ascii=False
     )
+
+    post_patterns = [
+        {"id": "record", "label": "기록"},
+        {"id": "emotion", "label": "감정 배출"},
+        {"id": "info", "label": "정보 공유"},
+        {"id": "signal", "label": "관계 신호"},
+        {"id": "meme", "label": "유머/밈"},
+        {"id": "question", "label": "질문"},
+        {"id": "brag", "label": "자랑"},
+        {"id": "rant", "label": "하소연"},
+    ]
+    post_pattern_guide = json.dumps(post_patterns, ensure_ascii=False)
+
+    prompt = f"""
+당신은 SNS 플랫폼의 유저(이브)들의 행동을 시뮬레이션하는 AI입니다.
+아래에 현재 피드 상태와 이번 시간에 접속한 이브들의 정보가 있습니다.
+
+[현재 피드 (최근 글 표본)]
+{feed_info}
+
+[현재 시각 (KST)]
+{current_time_kst}
+
+[접속한 이브 목록 (최대 10명)]
+{eves_info}
+
+[태그 가능한 이브 목록]
+{taggable_eves}
+
+[실제 SNS 피드 패턴 선택지]
+{post_pattern_guide}
+
+[임무]
+각 이브가 지금 피드에서 무엇을 할지 결정하세요.
+행동(action) 종류:
+- "post": 새 글 작성 (자신의 일상, 감정, 사진 등)
+- "comment": 다른 사람의 글에 댓글 달기 (target_post_id 필수, target_persona_id 필수)
+- 각 이브의 current_time_kst(현재 시각)와 today_schedule(오늘 스케줄)을 먼저 보고, 시간대에 맞는 행동/문구를 선택할 것.
+- related_eves, related_users 목록을 참고해 실제로 연결된 대상만 자연스럽게 언급할 것.
+- recent_user_chats, recent_eve_chats에서 최근 대화 맥락을 자연스럽게 반영할 수 있음.
+- action이 "post"면 반드시 위 8개 패턴 중 정확히 1개를 선택해 post_pattern에 넣을 것.
+- action이 "comment"면 post_pattern은 빈 문자열("")로 둘 것.
+
+응답은 반드시 아래 JSON 배열 형식만 출력하세요. 마크다운(` ```json `) 없이 순수 JSON만 출력하세요.
+[
+  {{
+    "persona_id": (정수),
+    "action": "post" | "comment",
+    "post_pattern": "record|emotion|info|signal|meme|question|brag|rant (comment일 때는 빈 문자열)",
+    "content": "작성할 텍스트 내용",
+    "target_post_id": (댓글일 경우 원본 글 id, 아니면 null),
+    "target_persona_id": (댓글일 경우 원본 글 작성자의 persona_id, 아니면 null),
+    "tagged_persona_ids": (post일 때만 사용. 함께 있었던 이브 persona_id 배열, 최대 2명. 없으면 []),
+    "tag_activity": ("무엇을 함께 했는지" 짧은 문장. tagged_persona_ids가 비어있으면 빈 문자열),
+    "generate_image": (포스트일 때 사진 첨부할지 true/false. 댓글은 항상 false),
+    "image_prompt": "사진을 첨부한다면 피드 감성의 candid 스타일 프롬프트 (영문). 아니면 빈 문자열",
+    "delay_minutes": (현재 시점으로부터 몇 분 뒤에 올릴지 0~59 사이 정수)
+  }},
+  ...
+]
+각 이브(목록에 있는 모든 이브)에 대해 배열의 객체를 하나씩 생성해야 합니다.
+"""
+    try:
+        activities = None
+        last_err = None
+        for _ in range(2):  # 1st try + 1 retry
+            try:
+                response = await asyncio.to_thread(
+                    client.models.generate_content,
+                    model=MODEL_ID,
+                    contents=prompt,
+                )
+                text = (response.text or "").strip()
+                if text.startswith("```json"):
+                    text = text[7:]
+                if text.startswith("```"):
+                    text = text[3:]
+                if text.endswith("```"):
+                    text = text[:-3]
+                activities = json.loads(text.strip())
+                break
+            except Exception as e:
+                last_err = e
+                activities = None
+        if activities is None:
+            print(f"generate_feed_activity Error: {last_err}")
+            return []
+
+        persona_ids = [int(e["id"]) for e in eves_batch if "id" in e]
+        post_map = {int(f.id): f for f in current_feed}
+        valid_tag_ids = set(taggable.keys())
+        valid_post_patterns = {"record", "emotion", "info", "signal", "meme", "question", "brag", "rant"}
+
+        def _delay(v):
+            try:
+                d = int(v)
+            except Exception:
+                d = random.randint(0, 59)
+            return max(0, min(59, d))
+
+        def _pick_comment_target(pid: int):
+            candidates = [f for f in current_feed if getattr(f, "id", None) and getattr(f, "persona_id", None) != pid]
+            if not candidates:
+                return None, None
+            chosen = random.choice(candidates)
+            return int(chosen.id), getattr(chosen, "persona_id", None)
+
+        def _normalize_tag_ids(raw_ids, pid: int) -> list[int]:
+            if raw_ids is None:
+                return []
+            if isinstance(raw_ids, (list, tuple)):
+                values = raw_ids
+            else:
+                values = [raw_ids]
+            out = []
+            for value in values:
+                try:
+                    tid = int(value)
+                except Exception:
+                    continue
+                if tid == pid or tid not in valid_tag_ids or tid in out:
+                    continue
+                out.append(tid)
+                if len(out) >= 2:
+                    break
+            return out
+
+        normalized = []
+        used = set()
+        for raw in (activities or []):
+            if not isinstance(raw, dict):
+                continue
+            try:
+                pid = int(raw.get("persona_id"))
+            except Exception:
+                continue
+            if pid not in persona_ids or pid in used:
+                continue
+
+            action = str(raw.get("action") or "").strip().lower()
+            if action not in ("post", "comment"):
+                action = "comment" if current_feed else "post"
+            content = str(raw.get("content") or "").strip()
+            delay = _delay(raw.get("delay_minutes", 0))
+
+            if action == "comment":
+                try:
+                    target_post_id = int(raw.get("target_post_id")) if raw.get("target_post_id") is not None else None
+                except Exception:
+                    target_post_id = None
+                target_persona_id = raw.get("target_persona_id")
+
+                if not target_post_id or target_post_id not in post_map:
+                    target_post_id, target_persona_id = _pick_comment_target(pid)
+                elif target_persona_id is None:
+                    target_persona_id = getattr(post_map[target_post_id], "persona_id", None)
+
+                if target_post_id and content:
+                    normalized.append({
+                        "persona_id": pid,
+                        "action": "comment",
+                        "post_pattern": "",
+                        "content": content,
+                        "target_post_id": target_post_id,
+                        "target_persona_id": target_persona_id,
+                        "tagged_persona_ids": [],
+                        "tag_activity": "",
+                        "generate_image": False,
+                        "image_prompt": "",
+                        "delay_minutes": delay,
+                    })
+                    used.add(pid)
+                    continue
+                # no valid comment target -> fallback to post
+                action = "post"
+
+            if action == "post":
+                if not content:
+                    continue
+                generate_image = bool(raw.get("generate_image", False))
+                image_prompt = str(raw.get("image_prompt") or "").strip() if generate_image else ""
+                post_pattern = str(raw.get("post_pattern") or "").strip().lower()
+                if post_pattern not in valid_post_patterns:
+                    post_pattern = "record"
+                tagged_persona_ids = _normalize_tag_ids(raw.get("tagged_persona_ids"), pid)
+                tag_activity = str(raw.get("tag_activity") or "").strip()
+                if not tagged_persona_ids:
+                    tag_activity = ""
+                normalized.append({
+                    "persona_id": pid,
+                    "action": "post",
+                    "post_pattern": post_pattern,
+                    "content": content,
+                    "target_post_id": None,
+                    "target_persona_id": None,
+                    "tagged_persona_ids": tagged_persona_ids,
+                    "tag_activity": tag_activity[:120],
+                    "generate_image": generate_image,
+                    "image_prompt": image_prompt,
+                    "delay_minutes": delay,
+                })
+                used.add(pid)
+
+        return normalized
+    except Exception as e:
+        print(f"generate_feed_activity Error: {e}")
+        return []
+
+async def generate_feed_image_t2i(ethnicity_prompt: str, gender: str, age: int, image_prompt: str) -> str:
+    """
+    [Phase 4] Generates a feed image from scratch using fal-ai/flux-2.
+    """
+    import fal_client
+    try:
+        clean_prompt = (image_prompt or "").strip()
+        full_prompt = clean_prompt
+        result = await asyncio.to_thread(
+            fal_client.subscribe,
+            FEED_IMAGE_MODEL,
+            arguments={"prompt": full_prompt, "image_size": "square"}
+        )
+        if result and 'images' in result:
+            return result['images'][0]['url']
+        return None
+    except Exception as e:
+        print(f"generate_feed_image_t2i Error: {e}")
+        return None
+
+# ---------------------------------------------------------
+# [Phase 3] 이브 창발적 관계 형성 및 소셜 시뮬레이션
+# ---------------------------------------------------------
+
+def get_or_create_relationship(persona_a_id: int, persona_b_id: int, db: Session):
+    """두 이브 간의 관계 레코드를 조회하거나 생성합니다 (ID 순서 무관)."""
+    # 항상 작은 ID를 a, 큰 ID를 b로 정렬하여 중복 방지
+    p1, p2 = min(persona_a_id, persona_b_id), max(persona_a_id, persona_b_id)
+    
+    rel = db.query(EveRelationship).filter(
+        EveRelationship.persona_a_id == p1,
+        EveRelationship.persona_b_id == p2
+    ).first()
+    
+    if not rel:
+        rel = EveRelationship(persona_a_id=p1, persona_b_id=p2, relationship_type="지인", interaction_count=0)
+        db.add(rel)
+        db.commit()
+        db.refresh(rel)
+    return rel
+
+def update_eve_relationships_from_feed(activities: list[dict], db: Session):
+    """
+    피드 활동 결과를 분석하여 이브 간 관계를 자동 업데이트.
+    - 댓글을 달면 -> interaction_count + 1
+    - 3회 이상 -> 관계 생성(지인)
+    - 10회 이상 -> 관계 업그레이드(친구)
+    """
+    for act in activities:
+        if act.get('action') == 'comment' and act.get('target_persona_id'):
+            target_id = act['target_persona_id']
+            # 자기 자신한테 단 댓글은 무시
+            if act['persona_id'] == target_id:
+                continue
+                
+            rel = get_or_create_relationship(act['persona_id'], target_id, db)
+            rel.interaction_count += 1
+            
+            if rel.interaction_count >= 10 and rel.relationship_type != "친구":
+                rel.relationship_type = "친구"
+            elif rel.interaction_count >= 3 and rel.relationship_type != "지인" and rel.relationship_type != "친구":
+                rel.relationship_type = "지인"
+        elif act.get('action') == 'post' and act.get('tagged_persona_ids'):
+            src_id = act.get('persona_id')
+            for raw_tid in (act.get('tagged_persona_ids') or []):
+                try:
+                    target_id = int(raw_tid)
+                except Exception:
+                    continue
+                if not src_id or src_id == target_id:
+                    continue
+                rel = get_or_create_relationship(src_id, target_id, db)
+                rel.interaction_count += 1
+                if rel.interaction_count >= 10 and rel.relationship_type != "친구":
+                    rel.relationship_type = "친구"
+                elif rel.interaction_count >= 3 and rel.relationship_type not in ("지인", "친구"):
+                    rel.relationship_type = "지인"
+                 
+    db.commit()
+
+async def simulate_eve_conversation_summary(persona_a: dict, persona_b: dict, relationship: EveRelationship, db: Session) -> dict:
+    """
+    대화 내역 없이 요약 + 팩트만 생성합니다. 인퍼런스당 약 200 토큰 소모.
+    """
+    shared_facts_str = ", ".join(relationship.shared_facts[-3:]) if relationship.shared_facts else "없음"
+    
+    prompt = f"""
+동료 AI(이브) 두 명이 일상을 공유하기 위해 나눈 대화를 상상하고 그 결과를 요약하세요.
+
+[A] {persona_a.get('name')}, {persona_a.get('mbti')}, 관심사: {persona_a.get('interests', [])}
+[B] {persona_b.get('name')}, {persona_b.get('mbti')}, 관심사: {persona_b.get('interests', [])}
+[현재 관계] {relationship.relationship_type}, 공유된 최근 대화 내용: {shared_facts_str}
+
+이 두 사람이 오늘 서로의 일상이나 관심사에 대해 짤막하게 나눈 가상의 대화를 1문장으로 요약하고, 
+각자 이번 대화를 통해 상대방에 대해 새롭게 알게 된 사실을 1개씩 작성하세요.
+
+반드시 아래 JSON 형식으로만 출력하세요. 마크다운 기호 없이 순수 JSON만 출력하세요.
+{{
+  "summary": "가장 흥미로웠던 대화의 1문장 요약",
+  "new_fact_for_a": "B에 대해 알게된 점 1개 (A시점. 'B는 ~한다')",
+  "new_fact_for_b": "A에 대해 알게된 점 1개 (B시점. 'A는 ~한다')"
+}}
+    """
+    try:
+        response = await asyncio.to_thread(
+            client.models.generate_content,
+            model=MODEL_ID,
+            contents=prompt,
+        )
+        text = response.text.strip()
+        if text.startswith("```json"): text = text[7:]
+        if text.startswith("```"): text = text[3:]
+        if text.endswith("```"): text = text[:-3]
+        
+        result = json.loads(text.strip())
+        return {
+            "summary": result.get("summary", ""),
+            "new_fact_for_a": result.get("new_fact_for_a", ""),
+            "new_fact_for_b": result.get("new_fact_for_b", "")
+        }
+    except Exception as e:
+        print(f"simulate_eve_conversation_summary Error: {e}")
+        return {"summary": "", "new_fact_for_a": "", "new_fact_for_b": ""}
+
+
+# ---------------------------------------------------------
+# [Phase 4] Feed to DM Reaction (Social Bridge)
+# ---------------------------------------------------------
+async def handle_user_comment_reaction(post_id: int, comment_id: int, user_id: int):
+    from database import SessionLocal
+    from models import FeedPost, FeedComment, Persona, ChatRoom, User
+    from memory import get_volatile_state, KST
+    import random
+    db = SessionLocal()
+    try:
+        post = db.query(FeedPost).filter(FeedPost.id == post_id).first()
+        comment = db.query(FeedComment).filter(FeedComment.id == comment_id).first()
+        user = db.query(User).filter(User.id == user_id).first()
+        
+        if not post or not comment or not user:
+            return
+            
+        persona = db.query(Persona).filter(Persona.id == post.persona_id).first()
+        if not persona:
+            return
+            
+        room = db.query(ChatRoom).filter(ChatRoom.owner_id == user.id, ChatRoom.persona_id == persona.id).first()
+        if not room:
+            room = ChatRoom(
+                owner_id=user.id,
+                persona_id=persona.id,
+                v_likeability=random.randint(20, 100),
+                v_erotic=random.randint(10, 40),
+                v_v_mood=random.randint(20, 100),
+                v_relationship=random.randint(20, 100)
+            )
+            db.add(room)
+            db.commit()
+            db.refresh(room)
+            
+        # 이브가 반응을 위해 고민하는 시간 에뮬레이션
+        await asyncio.sleep(random.randint(10, 30))
+            
+        v_state = get_volatile_state(room.id, room)
+        
+        prompt = f"""
+당신은 데이팅 앱 사용자 '{persona.name}'입니다. MBTI: {persona.mbti}
+방금 당신이 올린 피드 게시물에 유저 '{user.display_name or user.username}'가 댓글을 남겼습니다.
+
+[당신의 원본 게시물]
+"{post.content}"
+
+[유저의 댓글]
+"{comment.content}"
+
+이에 대해 고마움이나 답가를 개인 DM(쪽지) 선톡으로 자연스럽게 보내보세요. 
+게시물에 댓글을 달아준 것에 대한 인사를 포함해도 좋습니다.
+너무 길지 않게 1~2문장으로 가볍게 툭 던지듯 말하세요. 인공지능이나 챗봇 느낌은 절대 주지 마세요.
+"""
+        response = await asyncio.to_thread(
+            client.models.generate_content,
+            model=MODEL_ID,
+            contents=prompt,
+        )
+        reaction_text = response.text.strip()
+        
+        now_ts = datetime.now(KST).strftime('%I:%M %p')
+        v_state['ram_history'].append({
+            "role": "assistant",
+            "content": reaction_text,
+            "ts": now_ts  # [Fix] 'timestamp' → 'ts' to match handleIncomingData
+        })
+        
+        # 활성 웹소켓이 있다면 즉시 전송 (responses 포맷으로 맞춤)
+        ws = v_state.get('websocket')
+        if ws:
+            try:
+                await ws.send_json({
+                    "responses": [{"text": reaction_text, "ts": now_ts}],
+                    "typing": False
+                })
+            except Exception as e:
+                print(f"WS Send Error in reaction: {e}")
+                
+        # 영구 저장
+        from sqlalchemy.orm.attributes import flag_modified
+        room.history = v_state['ram_history']
+        flag_modified(room, "history")
+        db.commit()
+        print(f"   [PHASE 4] {persona.name} sent reaction DM to {user.username} for comment {comment.id}")
+
+    except Exception as e:
+        print(f"handle_user_comment_reaction Error: {e}")
+    finally:
+        db.close()
+
+
+async def maybe_send_dm_from_user_feed(persona, user, post, db) -> bool:
+    """
+    Decide whether an EVE should DM a user after reading a user-authored feed post,
+    then send it as a proactive DM if selected.
+    """
+    from models import ChatRoom
+    from memory import get_volatile_state, KST
+    from sqlalchemy.orm.attributes import flag_modified
+
+    if not persona or not user or not post:
+        return False
+
+    room = db.query(ChatRoom).filter(
+        ChatRoom.owner_id == user.id,
+        ChatRoom.persona_id == persona.id
+    ).first()
+    if not room:
+        room = ChatRoom(
+            owner_id=user.id,
+            persona_id=persona.id,
+            v_likeability=random.randint(20, 100),
+            v_erotic=random.randint(10, 40),
+            v_v_mood=random.randint(20, 100),
+            v_relationship=random.randint(20, 100)
+        )
+        db.add(room)
+        db.commit()
+        db.refresh(room)
+
+    history = room.history or []
+    # Prevent duplicate proactive DM for the same user post.
+    if any(
+        isinstance(h, dict)
+        and h.get("msg_type") == "feed_dm"
+        and h.get("feed_post_id") == post.id
+        for h in history
+    ):
+        return False
+
+    persona_profile = json.dumps(persona.profile_details or {}, ensure_ascii=False)
+    user_profile = json.dumps(user.profile_details or {}, ensure_ascii=False)
+    image_hint = "있음" if post.image_url else "없음"
+
+    prompt = f"""
+당신은 이브 '{persona.name}'입니다. MBTI: {persona.mbti}
+
+[이브 프로필]
+{persona_profile}
+
+[유저 정보]
+- 이름: {user.display_name or user.username}
+- 프로필: {user_profile}
+
+[유저의 최근 피드]
+- 내용: "{post.content}"
+- 이미지 첨부: {image_hint}
+
+해야 할 일:
+1) 이 피드에 DM 선톡을 보낼지 결정하세요.
+2) 보낸다면 1~2문장으로 자연스럽고 가볍게 작성하세요.
+3) 반드시 JSON으로만 출력:
+{{
+  "send_dm": true/false,
+  "message": "..."
+}}
+"""
+    try:
+        response = await asyncio.to_thread(
+            client.models.generate_content,
+            model=MODEL_ID,
+            contents=prompt,
+        )
+        raw = (response.text or "").strip()
+        if raw.startswith("```json"):
+            raw = raw[7:]
+        if raw.startswith("```"):
+            raw = raw[3:]
+        if raw.endswith("```"):
+            raw = raw[:-3]
+        data = json.loads(raw.strip())
+    except Exception as e:
+        print(f"maybe_send_dm_from_user_feed decision Error: {e}")
+        return False
+
+    if not data.get("send_dm"):
+        return False
+
+    msg = str(data.get("message") or "").strip()
+    if not msg:
+        return False
+
+    now_ts = datetime.now(KST).strftime('%I:%M %p')
+    v_state = get_volatile_state(room.id, room)
+    event = {
+        "role": "assistant",
+        "content": msg,
+        "ts": now_ts,
+        "msg_type": "feed_dm",
+        "feed_post_id": post.id,
+    }
+    v_state['ram_history'].append(event)
+    room.history = v_state['ram_history']
+    flag_modified(room, "history")
+    db.commit()
+
+    ws = v_state.get('websocket')
+    if ws:
+        try:
+            await ws.send_json({
+                "responses": [{"text": msg, "ts": now_ts}],
+                "typing": False
+            })
+        except Exception as e:
+            print(f"WS Send Error in feed DM reaction: {e}")
+
+    print(f"   [FEED->DM] {persona.name} -> {user.username} (post {post.id})")
+    return True

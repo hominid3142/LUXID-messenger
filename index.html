@@ -171,97 +171,112 @@
 
         <!-- [v3.3.0] Full-Page Tinder-Style Profile View -->
         <div id="profile-page">
-            <!-- Hero Image Section -->
             <div id="profile-hero-image" class="profile-hero-img">
-                <div class="profile-hero-back" onclick="closeProfile()">〈</div>
+                <div class="profile-hero-back" onclick="closeProfile()">&lt;</div>
                 <div class="profile-hero-gradient"></div>
                 <div class="profile-hero-overlay-text">
                     <div class="profile-name-row">
-                        <span id="profile-name" class="profile-hero-name">이름</span>
-                        <span id="profile-mbti" class="profile-hero-mbti">MBTI</span>
+                        <span id="fp-name" class="profile-hero-name">EVE</span>
+                        <span id="fp-mbti" class="profile-hero-mbti">MBTI</span>
                     </div>
-                    <div id="profile-hook" class="profile-hero-hook">"한 줄 어필"</div>
+                    <div id="fp-hook" class="profile-hero-hook">Match-ready hook</div>
+                    <div class="profile-hero-meta">
+                        <span id="fp-age" class="profile-hero-chip">-y</span>
+                        <span id="fp-gender" class="profile-hero-chip">-</span>
+                    </div>
                 </div>
             </div>
+            <div id="fp-photo-strip" style="display:none;"></div>
 
-            <!-- Scrollable Content Below Image -->
             <div class="profile-page-content">
-                <!-- Stats Row -->
                 <div class="profile-stats-row">
                     <div class="stat-item">
-                        <span id="profile-stat-friends" class="stat-number">0</span>
-                        <span class="stat-label">친구</span>
+                        <span id="fp-stat-friends" class="stat-number">0</span>
+                        <span class="stat-label">Friends</span>
                     </div>
                     <div class="stat-divider"></div>
                     <div class="stat-item">
-                        <span id="profile-stat-active" class="stat-number">0</span>
-                        <span class="stat-label">대화 중</span>
+                        <span id="fp-stat-active" class="stat-number">0</span>
+                        <span class="stat-label">Active 1h</span>
                     </div>
                     <div class="stat-divider"></div>
                     <div class="stat-item">
-                        <span id="profile-stat-rel" class="stat-badge">분석 중</span>
-                        <span class="stat-label">관계</span>
+                        <span id="fp-stat-rel" class="stat-badge">Unknown</span>
+                        <span class="stat-label">Relation</span>
                     </div>
                 </div>
 
-                <!-- Primary Action Buttons -->
                 <div class="profile-primary-actions">
-                    <button class="profile-btn-dm" id="profile-chat-btn">
-                        💬 DM 보내기
-                    </button>
-                    <button class="profile-btn-rel" id="profile-rel-btn">
-                        💞
-                    </button>
-                </div>
-
-                <!-- Bio Section -->
-                <div class="profile-section">
-                    <div class="profile-section-title">소개</div>
-                    <div id="profile-intro" class="profile-intro">
-                        안녕하세요, LUXID에 살고 있어요.
-                    </div>
+                    <button class="profile-btn-dm" id="fp-chat-btn">DM</button>
+                    <button class="profile-btn-rel" id="fp-rel-btn">+R</button>
                 </div>
 
                 <div class="profile-section">
-                    <div class="profile-section-title">정보</div>
+                    <div class="profile-section-title">Hook</div>
+                    <div id="fp-hook-card" class="profile-intro">Match-ready hook</div>
+                </div>
+
+                <div id="fp-personality-section" class="profile-section">
+                    <div class="profile-section-title">Personality</div>
                     <div class="profile-detail-grid">
-                        <div class="p-detail-item">
-                            <span class="label">💼 직업</span>
-                            <span id="profile-job" class="val">-</span>
-                        </div>
-                        <div class="p-detail-item">
-                            <span class="label">✨ 목표</span>
-                            <span id="profile-goal" class="val">-</span>
-                        </div>
-                        <div class="p-detail-item">
-                            <span class="label">🏃 스타일</span>
-                            <span id="profile-lifestyle" class="val">-</span>
-                        </div>
+                        <div class="p-detail-item"><span class="label">Seriousness</span><span id="fp-trait-serious"
+                                class="val">-</span></div>
+                        <div class="p-detail-item"><span class="label">Friendliness</span><span id="fp-trait-friendly"
+                                class="val">-</span></div>
+                        <div class="p-detail-item"><span class="label">Rationality</span><span id="fp-trait-rational"
+                                class="val">-</span></div>
+                        <div class="p-detail-item"><span class="label">Chat Style</span><span id="fp-trait-slang"
+                                class="val">-</span></div>
                     </div>
                 </div>
 
-                <div class="profile-section">
-                    <div class="profile-section-title">관심사</div>
-                    <div class="profile-interests-wrap" id="profile-interests">
-                        <!-- 관심사 태그 생성부 -->
+                <div id="fp-vibe-section" class="profile-section">
+                    <div class="profile-section-title">Current Vibe</div>
+                    <div class="profile-detail-grid">
+                        <div class="p-detail-item"><span class="label">Likeability</span><span id="fp-vibe-like"
+                                class="val">-</span></div>
+                        <div class="p-detail-item"><span class="label">Mood</span><span id="fp-vibe-mood"
+                                class="val">-</span></div>
+                        <div class="p-detail-item"><span class="label">Intimacy</span><span id="fp-vibe-rel"
+                                class="val">-</span></div>
+                        <div class="p-detail-item"><span class="label">Romance</span><span id="fp-vibe-erotic"
+                                class="val">-</span></div>
                     </div>
                 </div>
 
-                <div class="profile-section">
-                    <div class="profile-tmi-box">
-                        <span class="label">💡 TMI:</span>
-                        <span id="profile-tmi">-</span>
-                    </div>
+                <div class="profile-section" id="fp-feed-section" style="display:none;">
+                    <div class="profile-section-title">Recent Posts</div>
+                    <div id="fp-feed-list" style="display:flex; flex-direction:column; gap:10px;"></div>
                 </div>
 
-                <!-- Secondary Actions -->
                 <div class="profile-secondary-actions">
-                    <button class="profile-btn-secondary" id="profile-life-btn" style="display: none;">
-                        📅 Life Details
-                    </button>
-                    <button class="profile-btn-danger" id="profile-delete-btn">
-                        🗑️ 삭제
-                    </button>
+                    <button class="profile-btn-secondary" id="fp-life-btn" style="display: none;">Life Details</button>
+                    <button class="profile-btn-danger" id="fp-delete-btn">Delete Friend</button>
+                </div>
+            </div>
+        </div>
+
+        <div id="mini-profile-overlay" onclick="if(event.target===this) closeMiniProfile()"
+            style="display:none; position:fixed; inset:0; z-index:5800; background:rgba(0,0,0,0.45); align-items:flex-end; justify-content:center;">
+            <div
+                style="width:min(560px,100%); background:#fff; border-top-left-radius:18px; border-top-right-radius:18px; padding:16px; box-shadow:0 -10px 30px rgba(0,0,0,0.2);">
+                <div style="display:flex; align-items:center; gap:12px;">
+                    <img id="mp-avatar" src="" alt="profile"
+                        style="width:52px; height:52px; border-radius:50%; object-fit:cover; border:1px solid var(--border);">
+                    <div style="flex:1;">
+                        <div id="mp-name" style="font-size:16px; font-weight:800; color:var(--text-main);">EVE</div>
+                        <div id="mp-intro" style="font-size:12px; color:var(--text-sub); margin-top:2px;">소개</div>
+                    </div>
+                    <button type="button" onclick="closeMiniProfile()"
+                        style="border:none; background:transparent; font-size:22px; color:var(--text-sub); cursor:pointer;">×</button>
+                </div>
+                <div style="display:flex; gap:8px; margin-top:14px;">
+                    <button id="mp-btn-add" type="button" onclick="handleAddFriendFromMP()"
+                        style="flex:1; height:38px; border:none; border-radius:10px; background:#E5E5EA; color:#000; font-weight:700; cursor:pointer;">친구
+                        추가</button>
+                    <button id="mp-btn-dm" type="button" onclick="handleDMFromMP()"
+                        style="flex:1; height:38px; border:none; border-radius:10px; background:var(--blue); color:#fff; font-weight:700; cursor:pointer;">DM
+                        보내기</button>
                 </div>
             </div>
         </div>
@@ -320,17 +335,47 @@
         </div>
 
         <!-- [v1.5.0] 프로필 작성 화면 (회원가입 후 표시) -->
+        <div id="auth-backdrop" class="overlay-view" style="display:none; z-index:6500;"
+            onclick="if(event.target===this) closeAuthModal()">
+            <div id="auth-bottom-sheet" class="bottom-sheet"
+                style="width:100%; max-width:560px; border-top-left-radius:20px; border-top-right-radius:20px;">
+                <div class="sheet-header">
+                    <div class="sheet-title">로그인이 필요합니다</div>
+                    <button class="close-sheet-btn" onclick="closeAuthModal()">×</button>
+                </div>
+                <div class="sheet-content" style="padding:16px 20px 24px;">
+                    <div style="font-size:13px; color:var(--text-sub); margin-bottom:14px;">홈(피드) 외 탭은 로그인 후 이용할 수 있습니다.
+                    </div>
+                    <div id="sheet-login-form" class="auth-group" style="display:flex;">
+                        <input type="text" id="sheet-login-username" class="auth-input" placeholder="아이디" />
+                        <input type="password" id="sheet-login-password" class="auth-input" placeholder="비밀번호" />
+                        <button class="auth-btn-main" onclick="handleLogin()">로그인</button>
+                        <div class="auth-link" onclick="toggleAuthMode('register')">아이디가 없다면 회원가입</div>
+                    </div>
+                    <div id="sheet-register-form" class="auth-group" style="display:none;">
+                        <input type="text" id="sheet-reg-username" class="auth-input" placeholder="아이디" />
+                        <input type="password" id="sheet-reg-password" class="auth-input" placeholder="비밀번호" />
+                        <button class="auth-btn-main" style="background:#22c55e;"
+                            onclick="handleRegister()">회원가입</button>
+                        <div class="auth-link" onclick="toggleAuthMode('login')">로그인으로 돌아가기</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
         <div id="profile-setup-overlay" style="display: none">
             <div class="profile-setup-container">
                 <h2 class="profile-setup-title">프로필 만들기</h2>
 
                 <div class="profile-image-upload">
                     <div id="preview-avatar" class="avatar-preview"></div>
-                    <input type="file" id="profile-image-input" accept="image/*" style="display: none"
+                    <input type="file" id="profile-image-input" accept="image/*" multiple style="display: none"
                         onchange="previewProfileImage()" />
                     <button class="upload-btn" onclick="document.getElementById('profile-image-input').click()">
-                        📷 사진 선택
+                        📷 사진 선택 (최대 3장)
                     </button>
+                    <div id="profile-gallery-preview"
+                        style="display:flex; gap:8px; margin-top:10px; justify-content:center; flex-wrap:wrap;"></div>
                 </div>
 
                 <label
@@ -347,32 +392,44 @@
                     <option value="other">기타</option>
                 </select>
 
-                <select id="profile-mbti" class="profile-input">
-                    <option value="">MBTI 선택</option>
-                    <option value="INTJ">INTJ</option>
-                    <option value="INTP">INTP</option>
-                    <option value="ENTJ">ENTJ</option>
-                    <option value="ENTP">ENTP</option>
-                    <option value="INFJ">INFJ</option>
-                    <option value="INFP">INFP</option>
-                    <option value="ENFJ">ENFJ</option>
-                    <option value="ENFP">ENFP</option>
-                    <option value="ISTJ">ISTJ</option>
-                    <option value="ISFJ">ISFJ</option>
-                    <option value="ESTJ">ESTJ</option>
-                    <option value="ESFJ">ESFJ</option>
-                    <option value="ISTP">ISTP</option>
-                    <option value="ISFP">ISFP</option>
-                    <option value="ESTP">ESTP</option>
-                    <option value="ESFP">ESFP</option>
-                </select>
+                <div class="profile-mbti-block">
+                    <div class="profile-mbti-head">
+                        <span>MBTI</span>
+                        <strong id="profile-mbti-preview">INFP</strong>
+                    </div>
+                    <div class="profile-mbti-dial-grid">
+                        <div class="mbti-axis">
+                            <div class="mbti-axis-label">E / I</div>
+                            <div id="mbti-axis-ei" class="mbti-choice-row">
+                                <button type="button" class="mbti-choice-btn" data-value="E">E</button>
+                                <button type="button" class="mbti-choice-btn" data-value="I">I</button>
+                            </div>
+                        </div>
+                        <div class="mbti-axis">
+                            <div class="mbti-axis-label">S / N</div>
+                            <div id="mbti-axis-sn" class="mbti-choice-row">
+                                <button type="button" class="mbti-choice-btn" data-value="S">S</button>
+                                <button type="button" class="mbti-choice-btn" data-value="N">N</button>
+                            </div>
+                        </div>
+                        <div class="mbti-axis">
+                            <div class="mbti-axis-label">T / F</div>
+                            <div id="mbti-axis-tf" class="mbti-choice-row">
+                                <button type="button" class="mbti-choice-btn" data-value="T">T</button>
+                                <button type="button" class="mbti-choice-btn" data-value="F">F</button>
+                            </div>
+                        </div>
+                        <div class="mbti-axis">
+                            <div class="mbti-axis-label">J / P</div>
+                            <div id="mbti-axis-jp" class="mbti-choice-row">
+                                <button type="button" class="mbti-choice-btn" data-value="J">J</button>
+                                <button type="button" class="mbti-choice-btn" data-value="P">P</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
 
-                <textarea id="profile-intro" class="profile-textarea" placeholder="자기소개"></textarea>
-                <input type="text" id="profile-job" class="profile-input" placeholder="직업" />
-                <input type="text" id="profile-goal" class="profile-input" placeholder="목표" />
-                <input type="text" id="profile-lifestyle" class="profile-input" placeholder="라이프스타일" />
-                <input type="text" id="profile-interests" class="profile-input" placeholder="관심사 (쉼표로 구분)" />
-                <textarea id="profile-tmi" class="profile-textarea" placeholder="TMI"></textarea>
+                <textarea id="profile-hook" class="profile-textarea" placeholder="관심을 끌 한 줄 소개를 작성해보세요"></textarea>
 
                 <button class="auth-btn-main" onclick="saveUserProfile()">
                     완료
@@ -450,13 +507,33 @@
                 <div id="tab-slider">
                     <!-- [v2.0.0] 피드 뷰 (Index 0) -->
                     <div id="feed-tab-view" class="tab-pane">
+                        <div id="feed-pull-indicator"
+                            style="display:none; text-align:center; font-size:12px; color:var(--text-sub); padding:6px 0;">
+                            당겨서 새로고침</div>
                         <div id="feed-list" class="feed-container">
                             <!-- JS로 피드 카드 렌더링 -->
+                        </div>
+                        <div id="user-feed-composer" class="feed-compose-dock" style="display:none;">
+                            <div id="user-feed-image-pill" class="feed-compose-image-pill" style="display:none;">
+                                <img id="user-feed-image-preview" src="" alt="attachment">
+                                <button type="button" onclick="clearUserFeedImage()">×</button>
+                            </div>
+                            <div class="feed-compose-row">
+                                <button id="user-feed-plus-btn" class="feed-compose-plus" type="button"
+                                    onclick="triggerFeedImagePicker()">+</button>
+                                <input id="user-feed-image-file" type="file" accept="image/*" style="display:none;"
+                                    onchange="onUserFeedImageSelected(this)">
+                                <input id="user-feed-content" class="feed-compose-input" type="text"
+                                    placeholder="지금 무슨 생각을 하고 있나요?"
+                                    onkeydown="if(event.key==='Enter'){event.preventDefault();submitUserFeedPost();}">
+                                <button id="user-feed-submit-btn" class="feed-compose-submit" type="button"
+                                    onclick="submitUserFeedPost()">올리기</button>
+                            </div>
                         </div>
                     </div>
 
                     <!-- [v2.0.0] Map Tab View (Index 1) -->
-                    <div id="map-tab-view" class="tab-pane" style="display: flex;">
+                    <div id="map-tab-view" class="tab-pane" style="display: flex; position: relative;">
                         <div class="map-container">
                             <div class="map-header">
                                 <h2>LUXID 월드</h2>
@@ -466,14 +543,46 @@
                                 <!-- JS Rendered Districts -->
                             </div>
                         </div>
+                        <div id="map-district-overlay" onclick="if(event.target===this) closeMapDistrictModal()"
+                            style="display:none; position:absolute; inset:0; z-index:2600; background:rgba(0,0,0,0.5); align-items:center; justify-content:center; padding:16px;">
+                            <div
+                                style="width:min(760px,100%); max-height:88vh; overflow-y:auto; background:#fff; border-radius:16px; padding:14px;">
+                                <div
+                                    style="display:flex; align-items:center; justify-content:space-between; margin-bottom:8px;">
+                                    <h3 id="map-district-title" style="margin:0; font-size:16px; font-weight:800;">지역 상세
+                                    </h3>
+                                    <button type="button" onclick="closeMapDistrictModal()"
+                                        style="border:none; background:transparent; font-size:22px; color:var(--text-sub); cursor:pointer;">×</button>
+                                </div>
+                                <img src="https://placehold.co/960x240/f4f4f4/666?text=Under+Construction" alt="공사중"
+                                    style="width:100%; border-radius:12px; border:1px solid var(--border); margin-bottom:10px;">
+                                <div style="font-size:12px; color:var(--text-sub); margin-bottom:10px;">현재 이 지역 기능은
+                                    공사중입니다. 현재 머무는 이브 목록입니다.</div>
+                                <div id="map-district-eves"
+                                    style="display:grid; grid-template-columns:repeat(auto-fill,minmax(70px,1fr)); gap:10px;">
+                                </div>
+                            </div>
+                        </div>
                     </div>
 
                     <!-- [v1.0.0] 친구 목록 뷰 (Index 2) -->
                     <div id="friend-tab-view" class="tab-pane">
+                        <div id="friend-edit-header"
+                            style="display:none; align-items:center; justify-content:space-between; gap:8px; padding:10px 14px;">
+                            <div id="friend-count-label" style="font-size:12px; color:var(--text-sub);">0명의 이브</div>
+                            <button id="friend-edit-toggle-btn" class="settings-btn" style="padding:6px 12px;"
+                                onclick="toggleFriendEditMode()">편집</button>
+                        </div>
+                        <div id="friend-bulk-bar"
+                            style="display:none; align-items:center; justify-content:space-between; gap:8px; padding:8px 14px; margin:0 14px 10px; border:1px solid var(--border); border-radius:10px; background:var(--bg-secondary);">
+                            <div id="friend-selected-count" style="font-size:12px; color:var(--text-sub);">0개 선택됨</div>
+                            <div style="display:flex; gap:6px;">
+                                <button class="shutdown-btn" style="background:#8e8e93;" onclick="selectAllFriends()">전체
+                                    선택</button>
+                                <button class="shutdown-btn" onclick="bulkDeleteFriends()">삭제</button>
+                            </div>
+                        </div>
                         <div id="friend-list"></div>
-                        <button id="add-friend-btn" class="add-btn" onclick="addFriend()">
-                            + 새로운 친구 찾기
-                        </button>
                     </div>
 
                     <!-- [v1.0.0] 채팅 목록 뷰 (Index 3) -->
@@ -549,7 +658,8 @@
                 <div id="atab-status" class="atab active" onclick="switchAdminTab('status')">EVV STATUS</div>
                 <div id="atab-users" class="atab" onclick="switchAdminTab('users')">USER ADMIN</div>
                 <div id="atab-notice" class="atab" onclick="switchAdminTab('notice')">NOTICE</div>
-                <div id="atab-factory" class="atab" onclick="switchAdminTab('factory')">EVE FACTORY</div>
+                <div id="atab-batch" class="atab" onclick="switchAdminTab('batch')">BATCH EVE</div>
+                <div id="atab-custom" class="atab" onclick="switchAdminTab('custom')">CUSTOM EVE</div>
             </div>
 
             <!-- 1. EVV STATUS: 브라우저 -> 제어 2단계 구조 -->
@@ -557,6 +667,21 @@
                 <!-- 1단계: 전체 이브 리스트 브라우저 -->
                 <div id="admin-eve-browser">
                     <div class="panel-title">World EVE Browser</div>
+                    <div
+                        style="display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:10px;">
+                        <div style="font-size:12px; color:var(--text-sub);">EVE 목록 관리</div>
+                        <button id="admin-eve-edit-btn" class="shutdown-btn" style="background:#8e8e93;"
+                            onclick="toggleAdminEveEditMode()">편집</button>
+                    </div>
+                    <div id="admin-eve-bulk-bar"
+                        style="display:none; align-items:center; justify-content:space-between; gap:8px; margin-bottom:10px; padding:8px 10px; border:1px solid var(--border); border-radius:10px; background:var(--bg-secondary);">
+                        <div id="admin-eve-selected-count" style="font-size:12px; color:var(--text-sub);">0개 선택됨</div>
+                        <div style="display:flex; gap:6px;">
+                            <button class="shutdown-btn" style="background:#8e8e93;" onclick="selectAllAdminEves()">전체
+                                선택</button>
+                            <button class="shutdown-btn" onclick="bulkDeleteAdminEves()">삭제</button>
+                        </div>
+                    </div>
                     <div id="admin-eve-tree-list" class="admin-list-container">
                         <!-- 스크립트에서 사용자별 이브 목록 동적 생성 -->
                     </div>
@@ -701,6 +826,33 @@
                             <textarea id="edit-details" class="admin-textarea"
                                 style="height:100px; font-family:monospace; font-size:10px;"></textarea>
 
+                            <div class="panel-label" style="margin-top:12px;">PROFILE IMAGE (PROMPT GENERATOR)</div>
+                            <textarea id="admin-profile-image-prompt" class="admin-textarea"
+                                style="height:72px; font-size:11px;" placeholder="프로필 이미지 프롬프트를 입력하세요"></textarea>
+                            <label
+                                style="display:block; font-size:12px; color:var(--text-sub); margin-top:6px;">Model</label>
+                            <select id="admin-profile-image-model" class="admin-input-text" style="width:100%;">
+                                <option value="flux">fal-ai/flux-2 (t2i)</option>
+                                <option value="edit">fal-ai/nano-banana/edit (base face)</option>
+                            </select>
+                            <label
+                                style="display:flex; align-items:center; gap:8px; font-size:12px; color:var(--text-sub); margin-top:6px;">
+                                <input id="admin-profile-use-base" type="checkbox" checked>
+                                Use base face edit when available
+                            </label>
+                            <div style="display:flex; gap:8px; align-items:center; margin-top:8px;">
+                                <button id="admin-profile-generate-btn" class="commit-btn-sm"
+                                    onclick="adminGenerateProfileImage()">GENERATE IMAGE</button>
+                                <button id="admin-profile-add-btn" class="commit-btn-sm"
+                                    onclick="adminAddProfileImage()">ADD PHOTO</button>
+                                <span id="admin-profile-image-status"
+                                    style="font-size:12px; color:var(--text-sub);">Ready</span>
+                            </div>
+                            <div id="admin-profile-gallery-preview"
+                                style="display:flex; gap:6px; margin-top:8px; flex-wrap:wrap;"></div>
+                            <img id="admin-profile-image-preview" src="" alt="profile preview"
+                                style="display:none; width:120px; height:120px; object-fit:cover; border-radius:12px; border:1px solid var(--border); margin-top:8px;">
+
                             <button class="commit-btn" onclick="saveIdentity()" style="margin-top:15px;">SAVE
                                 IDENTITY</button>
                         </div>
@@ -755,44 +907,67 @@
             </div>
 
             <!-- 4. EVE FACTORY: 배치 이브 생성 -->
-            <div id="admin-factory-view" style="display:none;">
+            <div id="admin-batch-view" style="display:none;">
                 <div class="panel-title">Eve Batch Creator</div>
                 <div class="admin-box" style="display:flex; flex-direction:column; gap:16px;">
                     <div class="panel-label">POPULATION</div>
                     <div style="display:flex; align-items:center; gap:12px;">
                         <input type="number" id="batch-count" value="10" min="1" max="200" class="admin-input-text"
                             style="width:80px; text-align:center;">
-                        <span style="font-size:12px; color:var(--text-sub);">명 생성 (최대 200)</span>
+                        <span style="font-size:12px; color:var(--text-sub);">count</span>
                     </div>
 
-                    <div class="panel-label">ETHNICITY WEIGHT</div>
-                    <div style="display:flex; flex-direction:column; gap:8px;">
-                        <div style="display:flex; align-items:center; gap:8px;">
-                            <span style="font-size:11px; width:50px; color:var(--text-sub);">백인</span>
-                            <input type="range" id="weight-white" min="0" max="100" value="20"
-                                oninput="syncWeights('white')" style="flex:1;">
-                            <span id="weight-white-val" style="font-size:12px; width:35px; text-align:right;">20</span>
+                    <div>
+                        <div style="display:flex; justify-content:space-between; margin-bottom:6px;">
+                            <label style="font-size:12px; color:var(--text-sub);">Gender ratio</label>
+                            <span style="font-size:12px; font-weight:700;">
+                                M <span id="batch-male-val">50</span>% / F <span id="batch-female-val">50</span>%
+                            </span>
                         </div>
                         <div style="display:flex; align-items:center; gap:8px;">
-                            <span style="font-size:11px; width:50px; color:var(--text-sub);">흑인</span>
-                            <input type="range" id="weight-black" min="0" max="100" value="10"
-                                oninput="syncWeights('black')" style="flex:1;">
-                            <span id="weight-black-val" style="font-size:12px; width:35px; text-align:right;">10</span>
-                        </div>
-                        <div style="display:flex; align-items:center; gap:8px;">
-                            <span style="font-size:11px; width:50px; color:var(--text-sub);">동양인</span>
-                            <input type="range" id="weight-asian" min="0" max="100" value="70"
-                                oninput="syncWeights('asian')" style="flex:1;">
-                            <span id="weight-asian-val" style="font-size:12px; width:35px; text-align:right;">70</span>
-                        </div>
-                        <div style="font-size:11px; color:var(--text-sub); text-align:right;">
-                            합계: <span id="weight-sum">100</span> (자동 조정됨)
+                            <span style="font-size:12px;">M</span>
+                            <input type="range" id="batch-gender" min="0" max="100" value="50"
+                                style="flex:1; accent-color:var(--blue);" oninput="updateGenderSlider(this.value)">
+                            <span style="font-size:12px;">F</span>
                         </div>
                     </div>
 
-                    <button class="commit-btn" id="batch-start-btn" onclick="startBatchCreation()">🚀 배치 생성 시작</button>
+                    <label style="display:flex; align-items:center; gap:8px; font-size:12px; color:var(--text-sub);">
+                        <input id="batch-multinational" type="checkbox"
+                            onchange="toggleBatchMultinational(this.checked)">
+                        Multi-national mode (default OFF: Korean-only)
+                    </label>
 
-                    <div id="batch-progress" style="display:none;">
+                    <div id="batch-ethnicity-wrap" style="display:none;">
+                        <div class="panel-label">ETHNICITY WEIGHT</div>
+                        <div style="display:flex; flex-direction:column; gap:8px;">
+                            <div style="display:flex; align-items:center; gap:8px;">
+                                <span style="font-size:11px; width:50px; color:var(--text-sub);">White</span>
+                                <input type="range" id="batch-white" min="0" max="100" value="33"
+                                    oninput="updateEthnicitySlider('white', this.value)" style="flex:1;">
+                                <span id="batch-white-val"
+                                    style="font-size:12px; width:35px; text-align:right;">33%</span>
+                            </div>
+                            <div style="display:flex; align-items:center; gap:8px;">
+                                <span style="font-size:11px; width:50px; color:var(--text-sub);">Black</span>
+                                <input type="range" id="batch-black" min="0" max="100" value="33"
+                                    oninput="updateEthnicitySlider('black', this.value)" style="flex:1;">
+                                <span id="batch-black-val"
+                                    style="font-size:12px; width:35px; text-align:right;">33%</span>
+                            </div>
+                            <div style="display:flex; align-items:center; gap:8px;">
+                                <span style="font-size:11px; width:50px; color:var(--text-sub);">Asian</span>
+                                <input type="range" id="batch-asian" min="0" max="100" value="34"
+                                    oninput="updateEthnicitySlider('asian', this.value)" style="flex:1;">
+                                <span id="batch-asian-val"
+                                    style="font-size:12px; width:35px; text-align:right;">34%</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <button class="commit-btn" id="batch-create-btn" onclick="startBatchCreate()">🚀 배치 생성 시작</button>
+
+                    <div id="batch-progress-container" style="display:none;">
                         <div class="panel-label">PROGRESS</div>
                         <div style="background:var(--bg-secondary); border-radius:8px; padding:12px;">
                             <div style="display:flex; justify-content:space-between; margin-bottom:8px;">
@@ -804,7 +979,7 @@
                                     style="height:100%; background:var(--accent); width:0%; transition:width 0.3s;">
                                 </div>
                             </div>
-                            <div id="batch-error-log" style="font-size:10px; color:#ff6b6b; margin-top:8px;"></div>
+                            <div id="batch-logs" style="font-size:10px; color:#ff6b6b; margin-top:8px;"></div>
                         </div>
                     </div>
 
@@ -813,6 +988,145 @@
             </div>
 
             <!-- 상세 뷰 (USER ADMIN에서 진입 시 사용) -->
+            <div id="admin-custom-view" style="display:none;">
+                <div class="panel-title">Custom Eve Creator</div>
+                <div class="admin-box" style="display:flex; flex-direction:column; gap:12px;">
+                    <div class="panel-label">CORE</div>
+                    <input id="custom-eve-name" class="admin-input-text" type="text" placeholder="Name (optional)">
+                    <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px;">
+                        <input id="custom-eve-age" class="admin-input-text" type="number" min="19" max="60"
+                            placeholder="Age">
+                        <select id="custom-eve-gender" class="admin-input-text">
+                            <option value="">Gender (auto)</option>
+                            <option value="남성">남성</option>
+                            <option value="여성">여성</option>
+                        </select>
+                    </div>
+                    <select id="custom-eve-mbti" class="admin-input-text">
+                        <option value="">MBTI (auto)</option>
+                        <option>ISTJ</option>
+                        <option>ISFJ</option>
+                        <option>INFJ</option>
+                        <option>INTJ</option>
+                        <option>ISTP</option>
+                        <option>ISFP</option>
+                        <option>INFP</option>
+                        <option>INTP</option>
+                        <option>ESTP</option>
+                        <option>ESFP</option>
+                        <option>ENFP</option>
+                        <option>ENTP</option>
+                        <option>ESTJ</option>
+                        <option>ESFJ</option>
+                        <option>ENFJ</option>
+                        <option>ENTJ</option>
+                    </select>
+                    <div class="panel-label" style="margin-top:6px;">PERSONALITY (1~10)</div>
+                    <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px;">
+                        <input id="custom-p-seriousness" class="admin-input-text" type="number" min="1" max="10"
+                            placeholder="Seriousness">
+                        <input id="custom-p-friendliness" class="admin-input-text" type="number" min="1" max="10"
+                            placeholder="Friendliness">
+                        <input id="custom-p-rationality" class="admin-input-text" type="number" min="1" max="10"
+                            placeholder="Rationality">
+                        <input id="custom-p-slang" class="admin-input-text" type="number" min="1" max="10"
+                            placeholder="Slang">
+                    </div>
+                    <div class="panel-label" style="margin-top:6px;">IMAGE</div>
+                    <textarea id="custom-eve-image-prompt" class="admin-textarea" style="height:90px;"
+                        placeholder="Image prompt (manual input)"></textarea>
+                    <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px;">
+                        <div style="display:flex; flex-direction:column; gap:6px;">
+                            <input id="custom-eve-base-image-file" type="file" accept="image/*"
+                                onchange="loadCustomImageFile('custom-eve-base-image-file','custom-eve-base-image-url','custom-eve-base-image-preview')">
+                            <input id="custom-eve-base-image-url" class="admin-input-text" type="text"
+                                placeholder="Base face image URL/DataURL (optional)">
+                            <img id="custom-eve-base-image-preview" src=""
+                                style="display:none; width:100%; max-height:110px; object-fit:cover; border-radius:8px; border:1px solid var(--border);">
+                        </div>
+                        <div style="display:flex; flex-direction:column; gap:6px;">
+                            <input id="custom-eve-image-file" type="file" accept="image/*"
+                                onchange="loadCustomImageFile('custom-eve-image-file','custom-eve-image-url','custom-eve-image-preview')">
+                            <input id="custom-eve-image-url" class="admin-input-text" type="text"
+                                placeholder="Profile image URL/DataURL (optional)">
+                            <img id="custom-eve-image-preview" src=""
+                                style="display:none; width:100%; max-height:110px; object-fit:cover; border-radius:8px; border:1px solid var(--border);">
+                        </div>
+                    </div>
+                    <label style="display:flex; align-items:center; gap:8px; font-size:12px; color:var(--text-sub);">
+                        <input id="custom-generate-image" type="checkbox" checked>
+                        Generate profile image from prompt if profile image is empty
+                    </label>
+                    <div class="panel-label" style="margin-top:6px;">DETAIL JSON</div>
+                    <textarea id="custom-eve-profile-details" class="admin-textarea"
+                        style="height:120px; font-family:monospace;" placeholder='{"hook":""}'></textarea>
+                    <textarea id="custom-eve-daily-schedule" class="admin-textarea"
+                        style="height:100px; font-family:monospace;"
+                        placeholder='{"wake_time":"08:00","daily_tasks":["09:00 ..."],"sleep_time":"23:00"}'></textarea>
+                    <input id="custom-eve-feed-times" class="admin-input-text" type="text"
+                        placeholder='Feed times (comma): 09:00,14:00,20:00'>
+                    <div class="panel-label" style="margin-top:6px;">INITIAL ROOM STATUS</div>
+                    <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px;">
+                        <input id="custom-v-likeability" class="admin-input-text" type="number" min="0" max="100"
+                            placeholder="Likeability">
+                        <input id="custom-v-erotic" class="admin-input-text" type="number" min="0" max="100"
+                            placeholder="Erotic">
+                        <input id="custom-v-mood" class="admin-input-text" type="number" min="0" max="100"
+                            placeholder="Mood">
+                        <input id="custom-v-relationship" class="admin-input-text" type="number" min="0" max="100"
+                            placeholder="Relationship">
+                    </div>
+                    <div style="display:flex; gap:8px; margin-top:8px;">
+                        <button id="custom-reset-btn" class="commit-btn" style="flex:1;"
+                            onclick="resetCustomEveForm()">초기화</button>
+                        <button id="custom-autofill-btn" class="commit-btn" style="flex:1;"
+                            onclick="autoFillCustomEve()">AI 자동 채움</button>
+                        <button id="custom-create-btn" class="commit-btn" style="flex:1;"
+                            onclick="createCustomEve()">커스텀 이브 생성</button>
+                    </div>
+                    <div id="custom-eve-status" style="font-size:12px; color:var(--text-sub);"></div>
+                </div>
+            </div>
+
+            <div id="admin-eve-detail-modal"
+                style="display:none; position:fixed; inset:0; z-index:2000; background:rgba(0,0,0,0.6); align-items:center; justify-content:center; padding:20px;">
+                <div
+                    style="width:min(900px, 96vw); max-height:92vh; overflow-y:auto; background:#fff; border-radius:14px; border:1px solid var(--border); box-shadow:0 20px 50px rgba(0,0,0,0.3);">
+                    <div
+                        style="display:flex; align-items:center; justify-content:space-between; padding:14px 16px; border-bottom:1px solid var(--border);">
+                        <h3 id="admin-detail-name" style="margin:0; font-size:16px; font-weight:800;">EVE 상세 정보</h3>
+                        <button class="shutdown-btn"
+                            onclick="document.getElementById('admin-eve-detail-modal').style.display='none'">CLOSE</button>
+                    </div>
+                    <div style="padding:14px 16px; display:grid; grid-template-columns:1fr 1fr; gap:14px;">
+                        <div style="display:flex; flex-direction:column; gap:8px;">
+                            <div class="panel-label">BASE FACE IMAGE</div>
+                            <img id="admin-detail-base-img" src="" alt="base face"
+                                style="display:none; width:100%; max-height:220px; object-fit:cover; border-radius:8px; border:1px solid var(--border);">
+                            <div class="panel-label">FACE PROMPT</div>
+                            <div id="admin-detail-face-prompt"
+                                style="min-height:64px; background:#f7f7f8; border:1px solid var(--border); border-radius:8px; padding:10px; font-size:12px; line-height:1.45; color:var(--text-main); white-space:pre-wrap;">
+                            </div>
+                        </div>
+                        <div style="display:flex; flex-direction:column; gap:8px;">
+                            <div class="panel-label">PROFILE IMAGE</div>
+                            <img id="admin-detail-avatar-img" src="" alt="profile"
+                                style="display:none; width:100%; max-height:220px; object-fit:cover; border-radius:8px; border:1px solid var(--border);">
+                            <div class="panel-label">FRIENDS</div>
+                            <div id="admin-detail-friends"
+                                style="min-height:64px; background:#f7f7f8; border:1px solid var(--border); border-radius:8px; padding:10px; display:flex; flex-wrap:wrap; gap:8px;">
+                            </div>
+                        </div>
+                    </div>
+                    <div style="padding:0 16px 14px 16px; display:flex; flex-direction:column; gap:10px;">
+                        <div class="panel-label">FEED ACTIVITY</div>
+                        <div id="admin-detail-feeds" style="display:flex; flex-direction:column; gap:8px;"></div>
+                        <div class="panel-label" style="margin-top:6px;">MEMORIES / CONVERSATIONS</div>
+                        <div id="admin-detail-memories" style="display:flex; flex-direction:column; gap:6px;"></div>
+                    </div>
+                </div>
+            </div>
+
             <div id="admin-detail-view" style="display: none">
                 <div class="admin-detail-header">
                     <button class="shutdown-btn" onclick="switchAdminTab('users')" style="background: #8e8e93">〈 BACK TO

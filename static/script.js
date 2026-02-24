@@ -1,7 +1,12 @@
 
-let globalSockets = {}; // 룸 아이디별 웹소켓 관리
+let globalSockets = {};
 let currentRoomId = null;
 let friendsData = [];
+let isEditMode = false;         // [Phase 5] Edit mode for friend list
+let selectedFriendRooms = new Set(); // [Phase 5] Selected rooms for bulk delete
+let isAdminEveEditMode = false;      // [Phase 6] Edit mode for admin eve list
+let selectedAdminEves = new Set();   // [Phase 6] Selected personas for bulk delete
+
 let messageQueue = [];
 let unreadCounts = {}; // 안 읽은 메시지 함
 let isProcessingQueue = false;
@@ -16,32 +21,80 @@ let adminSelectedRoomId = null;
 let accessToken = localStorage.getItem("accessToken");
 let isAdmin = localStorage.getItem("isAdmin") === "true";
 let currentUsername = localStorage.getItem("username");
+let userFeedImageData = "";
+let feedOffset = 0;
+let feedHasMore = true;
+let feedLoading = false;
+let feedScrollBound = false;
+let feedPullBound = false;
+const FEED_PAGE_SIZE = 15;
 
 // 앱 시작 시 인증 체크
 async function checkAuth() {
     const authOverlay = document.getElementById("auth-overlay");
-    if (!accessToken) {
-        authOverlay.style.display = "flex";
-    } else {
-        authOverlay.style.display = "none";
+    if (authOverlay) authOverlay.style.display = "none";
+
+    if (accessToken) {
         updateUIByAuth();
-        loadFriends(); // 데이터 로드
-        switchMobileView('feed'); // [v2.0.0] 시작 시 피드 화면
+        loadFriends();
+    } else {
+        updateUIByAuth();
     }
+
+    // 무조건 피드 화면으로 시작
+    switchMobileView('feed');
+    // [Phase 5] 피드 즉시 로드 보장
+    loadFeed(true);
+}
+
+// [Phase 5] Modern Auth Modal Visibility
+function showAuthModal() {
+    const modal = document.getElementById("auth-backdrop");
+    if (!modal) return;
+    modal.style.display = "flex";
+}
+
+function closeAuthModal() {
+    const modal = document.getElementById("auth-backdrop");
+    if (modal) modal.style.display = "none";
+}
+
+function openAuthOverlay(mode = "login") {
+    closeAuthModal();
+    const authOverlay = document.getElementById("auth-overlay");
+    if (authOverlay) authOverlay.style.display = "flex";
+    const welcome = document.getElementById("welcome-screen");
+    const form = document.getElementById("auth-form-container");
+    if (welcome) welcome.style.display = "none";
+    if (form) form.style.display = "block";
+    toggleAuthMode(mode);
+}
+
+// 동작 가로채기 (인터랙션 방어)
+function requireAuth(callback) {
+    if (!accessToken) {
+        showAuthModal();
+        return;
+    }
+    callback();
 }
 
 // 로그인/회원가입 UI 전환
 function toggleAuthMode(mode) {
-    document.getElementById("login-form").style.display =
-        mode === "login" ? "flex" : "none";
-    document.getElementById("register-form").style.display =
-        mode === "register" ? "flex" : "none";
+    const loginForm = document.getElementById("login-form");
+    const registerForm = document.getElementById("register-form");
+    const sheetLoginForm = document.getElementById("sheet-login-form");
+    const sheetRegisterForm = document.getElementById("sheet-register-form");
+    if (loginForm) loginForm.style.display = mode === "login" ? "flex" : "none";
+    if (registerForm) registerForm.style.display = mode === "register" ? "flex" : "none";
+    if (sheetLoginForm) sheetLoginForm.style.display = mode === "login" ? "flex" : "none";
+    if (sheetRegisterForm) sheetRegisterForm.style.display = mode === "register" ? "flex" : "none";
 }
 
 // 로그인 처리
 async function handleLogin() {
-    const u = document.getElementById("login-username").value;
-    const p = document.getElementById("login-password").value;
+    const u = (document.getElementById("sheet-login-username")?.value || document.getElementById("login-username")?.value || "").trim();
+    const p = (document.getElementById("sheet-login-password")?.value || document.getElementById("login-password")?.value || "").trim();
 
     try {
         const res = await fetch("/login", {
@@ -60,7 +113,9 @@ async function handleLogin() {
             localStorage.setItem("isAdmin", isAdmin);
             localStorage.setItem("username", currentUsername);
 
-            document.getElementById("auth-overlay").style.display = "none";
+            closeAuthModal();
+            const authOverlay = document.getElementById("auth-overlay");
+            if (authOverlay) authOverlay.style.display = "none";
 
             // [v1.5.0] 온보딩 완료 여부 확인
             if (data.onboarding_completed === false) {
@@ -74,14 +129,15 @@ async function handleLogin() {
             alert(err.detail || "로그인에 실패했습니다.");
         }
     } catch (e) {
+        console.error("Batch start error", e);
         alert("서버 연결에 실패했습니다.");
     }
 }
 
 // 회원가입 처리 - [v1.5.0] 회원가입 후 자동 로그인 및 프로필 작성
 async function handleRegister() {
-    const u = document.getElementById("reg-username").value;
-    const p = document.getElementById("reg-password").value;
+    const u = (document.getElementById("sheet-reg-username")?.value || document.getElementById("reg-username")?.value || "").trim();
+    const p = (document.getElementById("sheet-reg-password")?.value || document.getElementById("reg-password")?.value || "").trim();
 
     const res = await fetch("/register", {
         method: "POST",
@@ -107,6 +163,10 @@ async function handleRegister() {
             localStorage.setItem("isAdmin", isAdmin);
             localStorage.setItem("username", currentUsername);
 
+            closeAuthModal();
+            const authOverlay = document.getElementById("auth-overlay");
+            if (authOverlay) authOverlay.style.display = "none";
+
             // 프로필 작성 화면으로 이동
             showProfileSetup();
         } else {
@@ -121,14 +181,22 @@ async function handleRegister() {
 
 // 로그아웃
 function logout() {
-    localStorage.clear();
-    location.reload();
+    accessToken = null;
+    isAdmin = false;
+    currentUsername = "";
+    localStorage.removeItem("accessToken");
+    localStorage.removeItem("isAdmin");
+    localStorage.removeItem("username");
+    updateUIByAuth();
+    switchMobileView("feed");
 }
 
 // 로그아웃 버튼 핸들러
 function handleLogout() {
-    if (confirm("로그아웃 하시겠습니까?")) {
+    if (accessToken) {
         logout();
+    } else {
+        showAuthModal();
     }
 }
 
@@ -171,6 +239,12 @@ function closeAuth() {
 }
 
 function switchMobileView(view) {
+    // [Phase 5] 게스트 모드 뷰 접근 제한
+    if (!accessToken && ['map', 'list', 'chats', 'settings'].includes(view)) {
+        showAuthModal();
+        return;
+    }
+
     currentView = view;
     document.body.classList.remove("is-chatting", "is-dev", "show-auth");
     const navs = document.querySelectorAll(".nav-item");
@@ -200,7 +274,7 @@ function switchMobileView(view) {
         if (slider) slider.style.transform = "translateX(0%)";
         title.innerText = "LUXID";
         navs[0].classList.add("active");
-        loadFeed();
+        loadFeed(true);
     } else if (view === "map") { // [NEW] 맵 탭
         if (slider) slider.style.transform = "translateX(-20%)";
         title.innerText = "WORLD";
@@ -230,13 +304,17 @@ function switchMobileView(view) {
     }
 }
 
-// [v1.4.2 수정] 관리자 상위 탭 전환 (3분할 탭 연동)
+// [v1.4.2 수정] 관리자 상위 탭 전환 (3분할 탭 연동 + BATCH)
 function switchAdminTab(tab) {
+    const batchView = document.getElementById("admin-batch-view");
+    const factoryView = document.getElementById("admin-factory-view");
     const views = {
         "status": document.getElementById("admin-status-view"),
         "users": document.getElementById("admin-user-view"),
         "notice": document.getElementById("admin-notice-view"),
-        "factory": document.getElementById("admin-factory-view")
+        "batch": batchView || factoryView,
+        "factory": factoryView || batchView,
+        "custom": document.getElementById("admin-custom-view")
     };
     const detailView = document.getElementById("admin-detail-view");
 
@@ -245,16 +323,385 @@ function switchAdminTab(tab) {
 
     if (views[tab]) views[tab].style.display = "block";
 
-    ["status", "users", "notice", "factory"].forEach(t => {
-        const el = document.getElementById("atab-" + t);
-        if (el) el.classList.toggle("active", tab === t);
-    });
+    const atabStatus = document.getElementById("atab-status");
+    const atabUsers = document.getElementById("atab-users");
+    const atabNotice = document.getElementById("atab-notice");
+    const atabBatch = document.getElementById("atab-batch");
+    const atabFactory = document.getElementById("atab-factory");
+    const atabCustom = document.getElementById("atab-custom");
+
+    if (atabStatus) atabStatus.classList.toggle("active", tab === "status");
+    if (atabUsers) atabUsers.classList.toggle("active", tab === "users");
+    if (atabNotice) atabNotice.classList.toggle("active", tab === "notice");
+    if (atabBatch) atabBatch.classList.toggle("active", tab === "batch" || tab === "factory");
+    if (atabFactory) atabFactory.classList.toggle("active", tab === "factory" || tab === "batch");
+    if (atabCustom) atabCustom.classList.toggle("active", tab === "custom");
 
     if (tab === "status") backToEveBrowser();
     if (tab === "users") loadAdminUsers();
 }
 
+// [v3.6.0] 이브 일괄 생성 로직 (Phase 1)
+let batchPollInterval = null;
+
+// 성별 슬라이더 업데이트
+function updateGenderSlider(val) {
+    const malePercent = 100 - parseInt(val);
+    const femalePercent = parseInt(val);
+    document.getElementById('batch-male-val').innerText = malePercent;
+    document.getElementById('batch-female-val').innerText = femalePercent;
+}
+
+// 인종 가중치 연동 슬라이더 (하나 바꾸면 나머지 두 개가 비율 유지하며 조정)
+function updateEthnicitySlider(changed, newVal) {
+    newVal = parseInt(newVal);
+    const others = { white: ['black', 'asian'], black: ['white', 'asian'], asian: ['white', 'black'] };
+    const [a, b] = others[changed];
+    const remaining = 100 - newVal;
+    const aEl = document.getElementById(`batch-${a}`);
+    const bEl = document.getElementById(`batch-${b}`);
+    const aVal = parseInt(aEl.value);
+    const bVal = parseInt(bEl.value);
+    const total = aVal + bVal;
+
+    let newA, newB;
+    if (total === 0) {
+        newA = Math.round(remaining / 2);
+        newB = remaining - newA;
+    } else {
+        newA = Math.round((aVal / total) * remaining);
+        newB = remaining - newA;
+    }
+
+    newA = Math.max(0, Math.min(100, newA));
+    newB = Math.max(0, Math.min(100, newB));
+
+    aEl.value = newA;
+    bEl.value = newB;
+
+    document.getElementById(`batch-${changed}-val`).innerText = newVal + '%';
+    document.getElementById(`batch-${a}-val`).innerText = newA + '%';
+    document.getElementById(`batch-${b}-val`).innerText = newB + '%';
+}
+
+function toggleBatchMultinational(enabled) {
+    const wrap = document.getElementById("batch-ethnicity-wrap");
+    if (wrap) wrap.style.display = enabled ? "block" : "none";
+}
+
+async function startBatchCreate() {
+    const count = parseInt(document.getElementById("batch-count").value) || 1;
+    const white = parseInt(document.getElementById("batch-white")?.value) || 33;
+    const black = parseInt(document.getElementById("batch-black")?.value) || 33;
+    const asian = parseInt(document.getElementById("batch-asian")?.value) || 34;
+    const multinational = !!document.getElementById("batch-multinational")?.checked;
+    // 여성 비율 (슬라이더 값 = 여성%)
+    const femalePercent = parseInt(document.getElementById("batch-gender").value);
+
+    const btn = document.getElementById("batch-create-btn");
+    const progressContainer = document.getElementById("batch-progress-container");
+    const progressBar = document.getElementById("batch-progress-bar");
+    const progressText = document.getElementById("batch-progress-text");
+    const logContainer = document.getElementById("batch-logs");
+
+    btn.disabled = true;
+    btn.style.opacity = 0.5;
+    progressContainer.style.display = "block";
+    progressBar.style.width = "0%";
+    progressText.innerText = `0 / ${count} (0 Failed)`;
+    if (logContainer) {
+        logContainer.style.display = "none";
+        logContainer.innerHTML = "";
+    }
+
+    try {
+        const res = await fetch("/admin/batch-create-eves", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+                "Authorization": `Bearer ${accessToken}`
+            },
+            body: JSON.stringify({ count, white, black, asian, female_percent: femalePercent, multinational })
+        });
+
+        if (!res.ok) {
+            let detail = "";
+            try {
+                const errData = await res.json();
+                detail = errData?.detail ? ` (${errData.detail})` : "";
+            } catch (_) { }
+            throw new Error(`Batch start failed: ${res.status}${detail}`);
+        }
+
+        const data = await res.json();
+        pollBatchStatus(data.job_id, count);
+    } catch (e) {
+        alert("일괄 생성 요청에 실패했습니다.");
+        btn.disabled = false;
+        btn.style.opacity = 1;
+        progressContainer.style.display = "none";
+    }
+}
+
+async function pollBatchStatus(jobId, totalCount) {
+    if (batchPollInterval) clearInterval(batchPollInterval);
+
+    const progressBar = document.getElementById("batch-progress-bar");
+    const progressText = document.getElementById("batch-progress-text");
+    const btn = document.getElementById("batch-create-btn");
+
+    batchPollInterval = setInterval(async () => {
+        try {
+            const res = await fetch(`/admin/batch-status/${jobId}`, {
+                headers: { "Authorization": `Bearer ${accessToken}` }
+            });
+            if (!res.ok) throw new Error();
+
+            const data = await res.json();
+            const percent = ((data.created + data.failed) / Math.max(data.total, 1)) * 100;
+
+            progressBar.style.width = `${percent}%`;
+            progressText.innerText = `${data.created} / ${data.total} (${data.failed} Failed)`;
+
+            if (data.logs && data.logs.length > 0) {
+                const logContainer = document.getElementById("batch-logs");
+                if (logContainer) {
+                    logContainer.style.display = "block";
+                    logContainer.innerHTML = data.logs.map(lg => `<div style="margin-bottom:2px;">${lg}</div>`).join("");
+                    logContainer.scrollTop = logContainer.scrollHeight;
+                }
+            }
+
+            if (data.done) {
+                clearInterval(batchPollInterval);
+                batchPollInterval = null;
+                btn.disabled = false;
+                btn.style.opacity = 1;
+                alert(`배치 생성이 완료되었습니다! (성공: ${data.created}, 실패: ${data.failed})`);
+            }
+        } catch (e) {
+            console.error("Polling error", e);
+        }
+    }, 2000);
+}
+
+// [Phase 6] 추가: 페이지 새로고침 시 진행 중인 작업을 복구
+async function checkActiveBatchJob() {
+    try {
+        const res = await fetch("/admin/active-batch-job", {
+            headers: { "Authorization": `Bearer ${accessToken}` }
+        });
+        if (res.ok) {
+            const data = await res.json();
+            if (data.job_id && data.status && !data.status.done) {
+                const btn = document.getElementById("batch-create-btn");
+                const progressContainer = document.getElementById("batch-progress-container");
+                if (btn) {
+                    btn.disabled = true;
+                    btn.style.opacity = 0.5;
+                }
+                if (progressContainer) progressContainer.style.display = "block";
+
+                // 재연결 메시지 출력
+                const logContainer = document.getElementById("batch-logs");
+                if (logContainer) {
+                    logContainer.style.display = "block";
+                    logContainer.innerHTML += `<div style="color:var(--blue); margin-top:4px;">🔄 기존 작업에 재연결되었습니다...</div>`;
+                }
+
+                pollBatchStatus(data.job_id, data.status.total);
+            }
+        }
+    } catch (e) {
+        console.error("Failed to recover batch job", e);
+    }
+}
+
 // [v1.4.2 신규] 관리자 STATUS 서브 탭 전환
+function readOptionalJsonInput(id) {
+    const el = document.getElementById(id);
+    if (!el) return null;
+    const raw = (el.value || "").trim();
+    if (!raw) return null;
+    try {
+        return JSON.parse(raw);
+    } catch (e) {
+        throw new Error(`${id} JSON format is invalid`);
+    }
+}
+
+function collectCustomEvePayload() {
+    const feedTimesRaw = (document.getElementById("custom-eve-feed-times")?.value || "").trim();
+    const feedTimes = feedTimesRaw
+        ? feedTimesRaw.split(",").map(v => v.trim()).filter(v => v)
+        : null;
+
+    return {
+        name: (document.getElementById("custom-eve-name")?.value || "").trim() || null,
+        age: (document.getElementById("custom-eve-age")?.value || "").trim() || null,
+        gender: (document.getElementById("custom-eve-gender")?.value || "").trim() || null,
+        mbti: (document.getElementById("custom-eve-mbti")?.value || "").trim() || null,
+        p_seriousness: (document.getElementById("custom-p-seriousness")?.value || "").trim() || null,
+        p_friendliness: (document.getElementById("custom-p-friendliness")?.value || "").trim() || null,
+        p_rationality: (document.getElementById("custom-p-rationality")?.value || "").trim() || null,
+        p_slang: (document.getElementById("custom-p-slang")?.value || "").trim() || null,
+        image_prompt: (document.getElementById("custom-eve-image-prompt")?.value || "").trim() || null,
+        face_base_url: (document.getElementById("custom-eve-base-image-url")?.value || "").trim() || null,
+        profile_image_url: (document.getElementById("custom-eve-image-url")?.value || "").trim() || null,
+        profile_details: readOptionalJsonInput("custom-eve-profile-details"),
+        daily_schedule: readOptionalJsonInput("custom-eve-daily-schedule"),
+        feed_times: feedTimes,
+        v_likeability: (document.getElementById("custom-v-likeability")?.value || "").trim() || null,
+        v_erotic: (document.getElementById("custom-v-erotic")?.value || "").trim() || null,
+        v_v_mood: (document.getElementById("custom-v-mood")?.value || "").trim() || null,
+        v_relationship: (document.getElementById("custom-v-relationship")?.value || "").trim() || null,
+        generate_image: !!document.getElementById("custom-generate-image")?.checked
+    };
+}
+
+function loadCustomImageFile(inputId, targetUrlId, previewId) {
+    const fileInput = document.getElementById(inputId);
+    const targetUrl = document.getElementById(targetUrlId);
+    const preview = document.getElementById(previewId);
+    if (!fileInput || !targetUrl) return;
+
+    const file = fileInput.files && fileInput.files[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = function (e) {
+        const dataUrl = e.target?.result;
+        if (!dataUrl) return;
+        targetUrl.value = dataUrl;
+        if (preview) {
+            preview.src = dataUrl;
+            preview.style.display = "block";
+        }
+    };
+    reader.readAsDataURL(file);
+}
+
+function fillCustomEveForm(data) {
+    if (!data) return;
+    const setVal = (id, value) => {
+        const el = document.getElementById(id);
+        if (el && value !== undefined && value !== null) el.value = value;
+    };
+
+    setVal("custom-eve-name", data.name);
+    setVal("custom-eve-age", data.age);
+    setVal("custom-eve-gender", data.gender);
+    setVal("custom-eve-mbti", data.mbti);
+    setVal("custom-p-seriousness", data.p_seriousness);
+    setVal("custom-p-friendliness", data.p_friendliness);
+    setVal("custom-p-rationality", data.p_rationality);
+    setVal("custom-p-slang", data.p_slang);
+    setVal("custom-eve-image-prompt", data.image_prompt);
+    setVal("custom-eve-base-image-url", data.face_base_url);
+    setVal("custom-eve-image-url", data.profile_image_url);
+    setVal("custom-v-likeability", data.v_likeability);
+    setVal("custom-v-erotic", data.v_erotic);
+    setVal("custom-v-mood", data.v_v_mood);
+    setVal("custom-v-relationship", data.v_relationship);
+    if (Array.isArray(data.feed_times)) {
+        setVal("custom-eve-feed-times", data.feed_times.join(","));
+    }
+
+    const pd = document.getElementById("custom-eve-profile-details");
+    if (pd && data.profile_details) pd.value = JSON.stringify(data.profile_details, null, 2);
+    const ds = document.getElementById("custom-eve-daily-schedule");
+    if (ds && data.daily_schedule) ds.value = JSON.stringify(data.daily_schedule, null, 2);
+
+    const basePreview = document.getElementById("custom-eve-base-image-preview");
+    if (basePreview && data.face_base_url) {
+        basePreview.src = data.face_base_url;
+        basePreview.style.display = "block";
+    }
+    const profilePreview = document.getElementById("custom-eve-image-preview");
+    if (profilePreview && data.profile_image_url) {
+        profilePreview.src = data.profile_image_url;
+        profilePreview.style.display = "block";
+    }
+}
+
+async function autoFillCustomEve() {
+    const statusEl = document.getElementById("custom-eve-status");
+    const btn = document.getElementById("custom-autofill-btn");
+    if (!btn) return;
+
+    try {
+        const payload = collectCustomEvePayload();
+        btn.disabled = true;
+        btn.style.opacity = 0.5;
+        if (statusEl) statusEl.innerText = "AI가 빈칸을 채우는 중...";
+
+        const res = await fetch("/admin/custom-eve/autofill", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+                "Authorization": `Bearer ${accessToken}`
+            },
+            body: JSON.stringify(payload)
+        });
+        if (!res.ok) throw new Error("autofill failed");
+
+        const data = await res.json();
+        fillCustomEveForm(data.data || {});
+        if (statusEl) statusEl.innerText = "AI 자동 채움 완료";
+    } catch (e) {
+        console.error(e);
+        alert("빈칸 자동 채우기 실패");
+        if (statusEl) statusEl.innerText = "자동 채움 실패";
+    } finally {
+        btn.disabled = false;
+        btn.style.opacity = 1;
+    }
+}
+
+async function createCustomEve() {
+    const statusEl = document.getElementById("custom-eve-status");
+    const btn = document.getElementById("custom-create-btn");
+    if (!btn) return;
+
+    try {
+        const payload = collectCustomEvePayload();
+        btn.disabled = true;
+        btn.style.opacity = 0.5;
+        if (statusEl) statusEl.innerText = "커스텀 이브 생성 중...";
+
+        const res = await fetch("/admin/custom-eve/create", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+                "Authorization": `Bearer ${accessToken}`
+            },
+            body: JSON.stringify(payload)
+        });
+        if (!res.ok) {
+            let msg = "create failed";
+            try {
+                const err = await res.json();
+                msg = err.detail || err.message || msg;
+            } catch (_) { }
+            throw new Error(msg);
+        }
+
+        const created = await res.json();
+        if (statusEl) statusEl.innerText = `생성 완료: ${created.name} (#${created.persona_id})`;
+
+        await loadAdminEves();
+        await loadFriends();
+        switchAdminTab("status");
+    } catch (e) {
+        console.error(e);
+        alert(`커스텀 이브 생성 실패: ${e.message || ""}`);
+        if (statusEl) statusEl.innerText = `생성 실패: ${e.message || ""}`;
+    } finally {
+        btn.disabled = false;
+        btn.style.opacity = 1;
+    }
+}
+
 function switchAdminSubTab(sub) {
     const contents = document.querySelectorAll(".admin-sub-content");
     contents.forEach(c => c.style.display = "none");
@@ -270,7 +717,10 @@ function switchAdminSubTab(sub) {
     if (sub === "identity") loadAdminIdentity();
     if (sub === "prompt") loadPromptTemplate();
     if (sub === "debug") loadDebugLogs();
+    if (sub === "create") checkActiveBatchJob();
 }
+
+let adminEvesData = [];
 
 // [v2.0.0] 모든 이브 목록(World EVE Browser) 로드 - 이브 중심
 async function loadAdminEves() {
@@ -278,27 +728,150 @@ async function loadAdminEves() {
         headers: { Authorization: `Bearer ${accessToken}` }
     });
     if (res.ok) {
-        const listData = await res.json();
-        const listContainer = document.getElementById("admin-eve-tree-list");
+        adminEvesData = await res.json();
+        renderAdminEves();
+    }
+}
 
-        listContainer.innerHTML = listData.map(eve => `
-            <div class="user-group-card">
-                <div class="user-group-header" style="display:flex; align-items:center; gap:10px;">
-                    <img src="${eve.persona_image || ''}" style="width:24px; height:24px; border-radius:50%; background:#ddd;">
-                    <span>${eve.persona_name} (${eve.rooms.length} users)</span>
-                </div>
-                ${eve.rooms.map(room => `
-                    <div class="eve-mini-item" onclick="inspectEve(${room.room_id}, '${eve.persona_name} - ${room.user_name}')">
-                        <div class="info">
-                            <span class="name">User: ${room.user_name}</span>
+// [Phase 6] 관리자 이브 목록 렌더링 (로컬 데이터 기반)
+function renderAdminEves() {
+    const listContainer = document.getElementById("admin-eve-tree-list");
+    if (!listContainer) return;
+
+    listContainer.innerHTML = `
+        <div class="admin-eve-card-grid">
+            ${adminEvesData.map(eve => {
+        const isSelected = selectedAdminEves.has(eve.persona_id);
+        return `
+                <div class="admin-eve-card ${isAdminEveEditMode ? 'edit-mode' : ''} ${isSelected ? 'is-selected' : ''}" 
+                     onclick="${isAdminEveEditMode ? `toggleAdminEveSelect(${eve.persona_id})` : ''}">
+                    <div class="admin-eve-card-header">
+                        ${isAdminEveEditMode ? `
+                            <div class="admin-eve-check-wrap">
+                                <div class="admin-eve-check ${isSelected ? 'checked' : ''}"></div>
+                            </div>
+                        ` : ''}
+                        <div style="position:relative; flex-shrink:0;">
+                            <img src="${eve.persona_image || 'https://via.placeholder.com/44'}" 
+                                 class="admin-eve-card-avatar"
+                                 onclick="if(!isAdminEveEditMode && '${eve.persona_image}') { event.stopPropagation(); openLightbox('${eve.persona_image}'); }"
+                                 onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
+                            <div style="display:none; width:44px; height:44px; border-radius:50%; background:#2c2c2e; border:2px solid var(--blue); align-items:center; justify-content:center; font-size:20px;">🤖</div>
                         </div>
-                        <div class="indicator ${room.is_active ? '' : 'offline'}">
-                            ${room.is_active ? '● LIVE' : '○ IDLE'}
+                        <div class="admin-eve-card-info">
+                            <div class="admin-eve-card-name" style="cursor:pointer; text-decoration:underline; text-underline-offset:3px;" 
+                                 onclick="${isAdminEveEditMode ? '' : `event.stopPropagation(); openAdminPersonaProfile(${eve.persona_id})`}">${eve.persona_name}</div>
+                            <div class="admin-eve-card-stat">${eve.rooms.length} 연결된 유저</div>
                         </div>
                     </div>
-                `).join('')}
-            </div>
-        `).join('');
+                    <div class="admin-eve-card-body">
+                        ${eve.rooms.map(room => `
+                            <div class="admin-eve-room-item" onclick="${isAdminEveEditMode ? '' : `event.stopPropagation(); inspectEve(${room.room_id}, '${eve.persona_name} - ${room.user_name}')`}">
+                                <div class="admin-eve-room-user">${room.user_name}</div>
+                                <div class="admin-eve-room-status ${room.is_active ? 'live' : 'idle'}">
+                                    ${room.is_active ? '● LIVE' : '○ IDLE'}
+                                </div>
+                            </div>
+                        `).join('')}
+                    </div>
+                </div>
+            `}).join('')}
+        </div>
+    `;
+}
+
+// [v3.3.0 추가] 관리자 탭에서 이브 전체 프로필 열기
+async function openAdminPersonaProfile(personaId) {
+    if (!accessToken) return;
+
+    try {
+        const res = await fetch(`/admin/persona/${personaId}/details`, {
+            headers: { Authorization: `Bearer ${accessToken}` }
+        });
+        if (!res.ok) throw new Error("Failed to load details");
+
+        const details = await res.json();
+        const p = adminEvesData.find(item => item.persona_id === personaId) || {};
+
+        // 1. Populate visual details
+        document.getElementById("admin-detail-name").innerText = `${details.name} 상세 정보`;
+
+        const baseImg = document.getElementById("admin-detail-base-img");
+        baseImg.src = details.face_base_url || "";
+        baseImg.style.display = details.face_base_url ? "block" : "none";
+
+        const facePromptEl = document.getElementById("admin-detail-face-prompt");
+        if (facePromptEl) {
+            facePromptEl.textContent = details.face_prompt || "";
+        }
+
+        const avatarImg = document.getElementById("admin-detail-avatar-img");
+        avatarImg.src = p.persona_image || "";
+        avatarImg.style.display = p.persona_image ? "block" : "none";
+
+        // 2. Feed Activities
+        const feedsContainer = document.getElementById("admin-detail-feeds");
+        if (details.feed_posts && details.feed_posts.length > 0) {
+            feedsContainer.innerHTML = details.feed_posts.map(f => `
+                <div style="padding:12px; background:#f9f9f9; border-radius:8px; border:1px solid var(--border);">
+                    <div style="font-size:11px; color:var(--text-sub); margin-bottom:4px;">${f.created_at}</div>
+                    <div style="font-size:13px; color:var(--text-main); margin-bottom:${f.image_url ? '8px' : '0'}; line-height:1.4;">${f.content}</div>
+                    ${f.image_url ? `<img src="${f.image_url}" style="width:100%; max-height:120px; object-fit:cover; border-radius:6px; cursor:pointer;" onclick="openLightbox('${f.image_url}')">` : ''}
+                </div>
+            `).join("");
+        } else {
+            feedsContainer.innerHTML = '<div style="font-size:13px; color:var(--text-sub);">피드 활동 없음</div>';
+        }
+
+        // 3. Social Graph
+        const friendsContainer = document.getElementById("admin-detail-friends");
+        if (details.friends && details.friends.length > 0) {
+            friendsContainer.innerHTML = details.friends.map(fr => `
+                <div style="padding:6px 12px; background:${fr.type === 'EVE' ? '#e3f2fd' : '#f3e5f5'}; border-radius:16px; font-size:12px; font-weight:600; color:var(--text-main); display:inline-flex; align-items:center; gap:6px; border:1px solid ${fr.type === 'EVE' ? '#bbdefb' : '#e1bee7'};">
+                    <span style="font-size:14px;">${fr.type === 'EVE' ? '🤖' : '👤'}</span>
+                    <span>${fr.name}</span>
+                    <span style="background:rgba(0,0,0,0.1); padding:2px 6px; border-radius:8px; font-size:10px;">${fr.relationship} ${fr.interactions !== '-' ? `(${fr.interactions})` : ''}</span>
+                </div>
+            `).join("");
+        } else {
+            friendsContainer.innerHTML = '<div style="font-size:13px; color:var(--text-sub);">친구 없음</div>';
+        }
+
+        // 4. Conversations & Memories
+        const memContainer = document.getElementById("admin-detail-memories");
+        let memHtml = '';
+
+        if (details.conversations && details.conversations.length > 0) {
+            memHtml += `<div style="font-size:14px; font-weight:bold; margin-bottom:6px; color:var(--text-main);">[ 최근 이브 간 대화 요약 ]</div>`;
+            memHtml += details.conversations.map(c => `
+                <div style="padding:10px 14px; background:#fff8e1; border-radius:8px; font-size:13px; border:1px solid #ffecb3; margin-bottom:8px; line-height:1.5; color:var(--text-main);">
+                    <div style="font-weight:bold; color:#f57f17; margin-bottom:4px;">with ${c.with}</div>
+                    ${c.summary}
+                </div>
+            `).join("");
+        }
+
+        if (details.shared_memory && details.shared_memory.length > 0) {
+            memHtml += `<div style="font-size:14px; font-weight:bold; margin-top:12px; margin-bottom:6px; color:var(--text-main);">[ 저장된 주요 기억 (Memories) ]</div>`;
+            memHtml += details.shared_memory.slice(-10).reverse().map(m => `
+                <div style="padding:8px 12px; background:#f0f4c3; border-radius:8px; font-size:13px; border:1px solid #e6ee9c; margin-bottom:6px; line-height:1.4; color:var(--text-main);">
+                    <span style="font-size:10px; color:#9e9d24; display:block; margin-bottom:2px;">[${m.category || '기억'}] ${m.ts || ''}</span>
+                    ${m.fact}
+                </div>
+            `).join("");
+        }
+
+        if (!memHtml) {
+            memHtml = '<div style="font-size:13px; color:var(--text-sub);">기억/대화 내역 없음</div>';
+        }
+        memContainer.innerHTML = memHtml;
+
+        // Show modal
+        document.getElementById("admin-eve-detail-modal").style.display = "flex";
+
+    } catch (err) {
+        console.error("openAdminPersonaProfile err:", err);
+        alert("이브 세부 정보를 불러오는데 실패했습니다.");
     }
 }
 
@@ -352,14 +925,50 @@ function renderFriendList() {
     const list = document.getElementById("friend-list");
     if (!list) return;
 
+    // Update header state
+    const editToggleBtn = document.getElementById("friend-edit-toggle-btn");
+    const editHeader = document.getElementById("friend-edit-header");
+    const bulkBar = document.getElementById("friend-bulk-bar");
+    const countLabel = document.getElementById("friend-count-label");
+    const addBtn = document.getElementById("add-friend-btn");
+
     if (friendsData.length === 0) {
+        if (editHeader) editHeader.style.display = "none";
+        if (bulkBar) bulkBar.style.display = "none";
+        isEditMode = false;
+        selectedFriendRooms.clear();
+        if (addBtn) addBtn.style.display = "";
         list.innerHTML = `
-            <div class="empty-state">
-                <div class="empty-icon">👥</div>
-                <div class="empty-text">친구가 없습니다</div>
+            <div class="empty-state" style="margin-top: 20px;">
+                <div class="empty-icon" style="font-size: 40px; margin-bottom: 10px;">👋</div>
+                <div class="empty-text" style="font-size: 16px; font-weight: bold; color: var(--text-main);">아직 친구가 없네요!</div>
+                <div style="font-size: 13px; color: var(--text-sub); margin-top: 5px;">새로운 이브들을 만나보세요.</div>
+            </div>
+            
+            <!-- [Phase 5] Suggested Friends Carousel -->
+            <div class="suggested-section" style="margin-top: 30px; padding: 0 20px;">
+                <div style="font-size: 14px; font-weight: 800; color: var(--text-main); margin-bottom: 15px;">추천 친구</div>
+                <div id="suggested-carousel" style="display: flex; gap: 15px; overflow-x: auto; padding-bottom: 20px; scroll-snap-type: x mandatory;">
+                    <div class="skeleton-box" style="width: 120px; height: 160px; flex-shrink: 0; border-radius: 16px;"></div>
+                    <div class="skeleton-box" style="width: 120px; height: 160px; flex-shrink: 0; border-radius: 16px;"></div>
+                    <div class="skeleton-box" style="width: 120px; height: 160px; flex-shrink: 0; border-radius: 16px;"></div>
+                </div>
             </div>
         `;
+        loadSuggestedFriends();
         return;
+    }
+
+    // Show/hide edit UI elements based on mode
+    if (editHeader) editHeader.style.display = "flex";
+    if (addBtn) addBtn.style.display = isEditMode ? "none" : "";
+    if (editToggleBtn) editToggleBtn.innerText = isEditMode ? "완료" : "편집";
+    if (countLabel) countLabel.innerText = `${friendsData.length}명의 이브`;
+
+    if (bulkBar) {
+        bulkBar.style.display = isEditMode ? "flex" : "none";
+        const selCount = document.getElementById("friend-selected-count");
+        if (selCount) selCount.innerText = `${selectedFriendRooms.size}개 선택됨`;
     }
 
     list.innerHTML = friendsData
@@ -371,27 +980,17 @@ function renderFriendList() {
                 ? `<img src="${f.profile_image_url}" class="avatar-img">`
                 : f.name[0];
 
-            // [v1.7.0] 동적 상태 메시지: 일정을 기반으로 활동 유추
             let statusActivity = "LUXID 체류 중";
             if (isOnline) statusActivity = "PORTAL 접속 중";
 
-            // [v1.7.2] 신규 형식 (object) 및 구형식 (array) 모두 지원
             if (f.daily_schedule) {
                 const hour = new Date().getHours();
-
-                // 신규 형식: {wake_time, daily_tasks, sleep_time}
                 if (typeof f.daily_schedule === 'object' && !Array.isArray(f.daily_schedule)) {
                     const wake = parseInt((f.daily_schedule.wake_time || "07:00").split(":")[0]);
                     const sleep = parseInt((f.daily_schedule.sleep_time || "23:00").split(":")[0]);
-
-                    if (hour < wake || hour >= sleep) {
-                        statusActivity = "휴식 중";
-                    } else {
-                        statusActivity = "활동 중";
-                    }
-                }
-                // 구형식: [{time, activity}, ...]
-                else if (Array.isArray(f.daily_schedule)) {
+                    if (hour < wake || hour >= sleep) statusActivity = "휴식 중";
+                    else statusActivity = "활동 중";
+                } else if (Array.isArray(f.daily_schedule)) {
                     const nowActivity = f.daily_schedule.find(s => {
                         if (!s.time || !s.time.includes("-")) return false;
                         const times = s.time.split("-");
@@ -403,8 +1002,14 @@ function renderFriendList() {
                 }
             }
 
+            const isSelected = selectedFriendRooms.has(f.room_id);
+            const clickAction = isEditMode
+                ? `toggleFriendSelect(${f.room_id})`
+                : `openProfile(${f.room_id})`;
+
             return `
-            <div class="friend-item portal-card ${isOnline ? "is-online" : ""}" onclick="openProfile(${f.room_id})">
+            <div class="friend-item portal-card ${isOnline ? "is-online" : ""} ${isEditMode ? "edit-mode" : ""} ${isSelected ? "is-selected" : ""}" onclick="${clickAction}">
+                ${isEditMode ? `<div class="friend-check-wrap"><div class="friend-check ${isSelected ? "checked" : ""}"></div></div>` : ""}
                 <div class="friend-avatar" style="background:${f.profile_image_url ? "none" : color}">
                     ${avatarContent}
                     <div class="online-dot"></div>
@@ -413,6 +1018,7 @@ function renderFriendList() {
                     <div class="name-row"><span class="name">${f.name}</span><span class="mbti">${f.mbti}</span></div>
                     <div class="last-msg">${statusActivity}</div>
                 </div>
+                ${!isEditMode ? `<button class="friend-delete-quick" onclick="event.stopPropagation(); deleteFriend(event, ${f.room_id})" title="친구 삭제">×</button>` : ""}
             </div>
         `;
         })
@@ -459,92 +1065,306 @@ function renderChatList() {
         .join("");
 }
 
-async function openProfile(roomId) {
-    const f = friendsData.find((item) => item.room_id === roomId);
-    if (!f) return;
+// [Phase 5] Mini Profile Bottom Sheet Logic
+let currentMiniProfileUser = null;
 
-    const heroImg = document.getElementById("profile-hero-image");
-    const name = document.getElementById("profile-name");
-    const mbti = document.getElementById("profile-mbti");
-    const hook = document.getElementById("profile-hook");
-    const intro = document.getElementById("profile-intro");
-    const job = document.getElementById("profile-job");
-    const goal = document.getElementById("profile-goal");
-    const lifestyle = document.getElementById("profile-lifestyle");
-    const tmi = document.getElementById("profile-tmi");
-    const interestsArea = document.getElementById("profile-interests");
-    const chatBtn = document.getElementById("profile-chat-btn");
-    const delBtn = document.getElementById("profile-delete-btn");
+async function openMiniProfile(authorId, roomId) {
+    currentMiniProfileUser = { authorId, roomId };
 
-    // [v3.3.0] Hero image: full-width background
-    if (f.profile_image_url) {
-        heroImg.style.backgroundImage = `url('${f.profile_image_url}')`;
-        heroImg.style.background = `url('${f.profile_image_url}') center/cover no-repeat`;
-        heroImg.classList.add("clickable");
-        heroImg.onclick = (e) => {
-            if (e.target.closest('.profile-hero-back')) return; // Prevent back button click from triggering
-            openLightbox(f.profile_image_url, (f.image_prompt || "").replace(/'/g, "\\'"));
-        };
-    } else {
-        const colors = ["#FF9500", "#FF2D55", "#AF52DE", "#5AC8FA", "#34C759"];
-        heroImg.style.backgroundImage = "none";
-        heroImg.style.background = `linear-gradient(135deg, ${colors[f.name.charCodeAt(0) % 5]}, #667eea)`;
-        heroImg.classList.remove("clickable");
-        heroImg.onclick = null;
+    // Fetch persona details
+    try {
+        const res = await fetch(`/api/public/persona/${authorId}`);
+        if (!res.ok) throw new Error("Failed to fetch persona");
+        const data = await res.json();
+
+        document.getElementById('mp-avatar').src = data.profile_image_url || '';
+        document.getElementById('mp-name').textContent = data.name;
+        document.getElementById('mp-intro').textContent = data.intro || '자기소개가 없습니다.';
+
+        // Update button state based on friendship
+        const addBtn = document.getElementById("mp-btn-add");
+        if (roomId) {
+            addBtn.textContent = "이미 친구";
+            addBtn.style.background = "#E5E5EA";
+            addBtn.style.color = "#000";
+            addBtn.disabled = false;
+        } else {
+            addBtn.textContent = "친구 추가";
+            addBtn.style.background = "#E5E5EA";
+            addBtn.style.color = "#000";
+            addBtn.disabled = false;
+        }
+
+        // Show overlay with animation
+        const overlay = document.getElementById('mini-profile-overlay');
+        overlay.style.display = 'flex';
+
+    } catch (e) {
+        console.error("Error loading mini profile:", e);
+    }
+}
+
+function closeMiniProfile() {
+    document.getElementById('mini-profile-overlay').style.display = 'none';
+    currentMiniProfileUser = null;
+}
+
+// "친구 추가" 버튼
+async function handleAddFriendFromMP() {
+    if (!accessToken) return showAuthModal();
+    if (!currentMiniProfileUser) return;
+    if (currentMiniProfileUser.roomId) {
+        alert("이미 추가되어 있습니다.");
+        return;
     }
 
-    name.innerText = f.name;
-    mbti.innerText = f.mbti;
+    try {
+        const res = await fetch(`/api/friends/${currentMiniProfileUser.authorId}/add`, {
+            method: "POST",
+            headers: { Authorization: `Bearer ${accessToken}` }
+        });
+        const data = await res.json();
+        if (data.status === "success") {
+            // Update current user so DM starts working immediately
+            currentMiniProfileUser.roomId = data.room_id;
+            const addBtn = document.getElementById("mp-btn-add");
+            addBtn.textContent = "이미 친구";
+            addBtn.style.background = "#E5E5EA";
+            addBtn.style.color = "#000";
+            addBtn.disabled = false;
+            if (String(data.message || "").includes("이미 친구")) {
+                alert("이미 추가되어 있습니다.");
+            } else {
+                alert("친구탭에 추가되었습니다.");
+            }
 
-    const details = f.profile_details || {};
-    hook.innerText = details.hook || "루시드에서 당신을 기다려요.";
-    intro.innerText = details.intro || "안녕하세요, LUXID에 살고 있어요.";
-    job.innerText = details.job || "-";
-    goal.innerText = details.goal || "-";
-    lifestyle.innerText = details.lifestyle || "-";
-    tmi.innerText = details.tmi || "-";
+            // Reload friends list in background
+            loadFriends();
+        }
+    } catch (e) {
+        console.error("Add friend failed", e);
+        alert("친구 추가에 실패했습니다.");
+    }
+}
 
-    interestsArea.innerHTML = (details.interests || [])
-        .map((i) => `<span class="interest-tag">${i}</span>`)
-        .join("");
+// "DM 보내기" 버튼
+function handleDMFromMP() {
+    if (!accessToken) return showAuthModal();
+    if (!currentMiniProfileUser) return;
 
-    // [v3.2.0] Stats Row
-    const relBadge = document.getElementById("profile-stat-rel");
-    if (relBadge) relBadge.innerText = f.relationship_category || "분석 중";
+    closeMiniProfile();
+    if (currentMiniProfileUser.roomId) {
+        // [Phase 5] DM 확인창 없이 바로 채팅방 진입 (UX 개선)
+        joinRoom(currentMiniProfileUser.roomId);
+    } else {
+        alert("먼저 친구를 추가해야 DM을 보낼 수 있습니다.");
+    }
+}
 
-    const statFriends = document.getElementById("profile-stat-friends");
-    const statActive = document.getElementById("profile-stat-active");
-    if (statFriends) statFriends.innerText = "·";
-    if (statActive) statActive.innerText = "·";
+// [Phase 5] 추천 친구 캐러셀 로드
+async function loadSuggestedFriends() {
+    try {
+        const res = await fetch('/api/public/personas/suggested?limit=5', {
+            headers: accessToken ? { Authorization: `Bearer ${accessToken}` } : {}
+        });
+        const suggested = await res.json();
+        const carousel = document.getElementById("suggested-carousel");
 
-    if (f.persona_id) {
-        fetch(`/persona/${f.persona_id}/stats`, {
+        if (!carousel) return;
+
+        carousel.innerHTML = suggested.map(p => `
+            <div class="suggested-card" onclick="openMiniProfile(${p.id}, null)" style="width: 140px; min-height: 180px; flex-shrink: 0; background: #fff; border-radius: 16px; border: 1px solid var(--border); overflow: hidden; display: flex; flex-direction: column; align-items: center; padding: 15px; text-align: center; cursor: pointer; transition: transform 0.2s; box-shadow: 0 4px 12px rgba(0,0,0,0.05);">
+                <img src="${p.profile_image_url || 'https://via.placeholder.com/60'}" style="width: 60px; height: 60px; border-radius: 50%; object-fit: cover; margin-bottom: 10px;">
+                <div style="font-weight: 800; font-size: 14px; color: var(--text-main); margin-bottom: 4px;">${p.name}</div>
+                <div style="font-size: 11px; color: var(--text-sub); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;">${p.intro}</div>
+                <button class="trendy-btn" style="width: 100%; margin-top: auto; padding: 8px !important; font-size: 12px !important; border-radius: 8px !important;" onclick="event.stopPropagation(); openMiniProfile(${p.id}, null)">프로필 보기</button>
+            </div>
+        `).join('');
+    } catch (e) {
+        console.error("Failed to load suggested friends:", e);
+    }
+}
+
+function renderFullProfile(data) {
+    const heroImg = document.getElementById("profile-hero-image");
+    const photoStrip = document.getElementById("fp-photo-strip");
+    const name = document.getElementById("fp-name");
+    const mbti = document.getElementById("fp-mbti");
+    const hook = document.getElementById("fp-hook");
+    const hookCard = document.getElementById("fp-hook-card");
+    const age = document.getElementById("fp-age");
+    const gender = document.getElementById("fp-gender");
+    const statFriends = document.getElementById("fp-stat-friends");
+    const statActive = document.getElementById("fp-stat-active");
+    const statRel = document.getElementById("fp-stat-rel");
+    const personalitySection = document.getElementById("fp-personality-section");
+    const vibeSection = document.getElementById("fp-vibe-section");
+    const details = data.profile_details || {};
+
+    const hookText = (details.hook || "").trim() || "No hook yet.";
+    const ageText = Number.isFinite(Number(data.age)) ? `${data.age}y` : "-y";
+    const genderText = data.gender || "-";
+
+    const rawGallery = Array.isArray(data.profile_images) ? data.profile_images : [];
+    const gallery = rawGallery
+        .map((item) => (item && typeof item === "object") ? (item.url || "") : String(item || ""))
+        .map((u) => String(u || "").trim())
+        .filter((u, idx, arr) => !!u && arr.indexOf(u) === idx);
+    if (data.profile_image_url && !gallery.includes(data.profile_image_url)) {
+        gallery.unshift(data.profile_image_url);
+    }
+
+    const applyHeroImage = (url) => {
+        heroImg.style.backgroundImage = `url('${url}')`;
+        heroImg.style.background = `url('${url}') center/cover no-repeat`;
+        heroImg.classList.add("clickable");
+        heroImg.onclick = (e) => {
+            if (e.target.closest(".profile-hero-back")) return;
+            openLightbox(url, data.image_prompt || "");
+        };
+    };
+
+    if (gallery.length > 0) {
+        applyHeroImage(gallery[0]);
+        if (photoStrip) {
+            photoStrip.style.display = gallery.length > 1 ? "flex" : "none";
+            photoStrip.innerHTML = "";
+            gallery.forEach((url, idx) => {
+                const img = document.createElement("img");
+                img.className = `fp-photo-thumb ${idx === 0 ? "active" : ""}`;
+                img.src = url;
+                img.alt = "photo";
+                img.addEventListener("click", () => {
+                    applyHeroImage(url);
+                    photoStrip.querySelectorAll(".fp-photo-thumb").forEach((el) => el.classList.remove("active"));
+                    img.classList.add("active");
+                });
+                photoStrip.appendChild(img);
+            });
+        }
+    } else {
+        const colors = ["#E05555", "#E07A3B", "#2F7EA5", "#2E8B57", "#865CC7"];
+        const idx = (data.name || "E").charCodeAt(0) % colors.length;
+        heroImg.style.backgroundImage = "none";
+        heroImg.style.background = `linear-gradient(135deg, ${colors[idx]}, #111827)`;
+        heroImg.classList.remove("clickable");
+        heroImg.onclick = null;
+        if (photoStrip) {
+            photoStrip.style.display = "none";
+            photoStrip.innerHTML = "";
+        }
+    }
+
+    name.innerText = data.name || "EVE";
+    mbti.innerText = data.mbti || "-";
+    hook.innerText = hookText;
+    hookCard.innerText = hookText;
+    age.innerText = ageText;
+    gender.innerText = genderText;
+    statRel.innerText = data.relationship_category || "Unknown";
+
+    const asScore = (v) => {
+        const n = Number(v);
+        if (!Number.isFinite(n)) return "-";
+        return `${n}/10`;
+    };
+    const asPercent = (v) => {
+        const n = Number(v);
+        if (!Number.isFinite(n)) return "-";
+        return `${Math.max(0, Math.min(100, Math.round(n)))}%`;
+    };
+
+    if (personalitySection) personalitySection.style.display = isAdmin ? "block" : "none";
+    if (vibeSection) vibeSection.style.display = isAdmin ? "block" : "none";
+
+    document.getElementById("fp-trait-serious").innerText = asScore(data.p_seriousness);
+    document.getElementById("fp-trait-friendly").innerText = asScore(data.p_friendliness);
+    document.getElementById("fp-trait-rational").innerText = asScore(data.p_rationality);
+    document.getElementById("fp-trait-slang").innerText = asScore(data.p_slang);
+
+    document.getElementById("fp-vibe-like").innerText = asPercent(data.v_likeability);
+    document.getElementById("fp-vibe-mood").innerText = asPercent(data.v_v_mood);
+    document.getElementById("fp-vibe-rel").innerText = Number.isFinite(Number(data.v_relationship)) ? `${Math.round(Number(data.v_relationship))}` : "-";
+    document.getElementById("fp-vibe-erotic").innerText = asPercent(data.v_erotic);
+
+    if (statFriends) statFriends.innerText = "0";
+    if (statActive) statActive.innerText = "0";
+    if (data.persona_id) {
+        fetch(`/persona/${data.persona_id}/stats`, {
             headers: { Authorization: `Bearer ${accessToken}` }
         }).then(r => r.ok ? r.json() : null).then(stats => {
             if (stats) {
                 if (statFriends) statFriends.innerText = stats.total_friends;
                 if (statActive) statActive.innerText = stats.active_chats_1h;
+
+                const feedSection = document.getElementById('fp-feed-section');
+                const feedList = document.getElementById('fp-feed-list');
+                if (feedSection && feedList && stats.feed_posts && stats.feed_posts.length > 0) {
+                    feedList.innerHTML = stats.feed_posts.map(p => `
+                        <div style="background:var(--bg-secondary); border-radius:10px; padding:12px; font-size:13px; line-height:1.5;">
+                            <div style="color:var(--text-sub); font-size:11px; margin-bottom:4px;">${p.created_at}</div>
+                            <div style="color:var(--text-main);">${p.content}</div>
+                            ${p.image_url ? `<img src="${p.image_url}" style="width:100%; max-height:140px; object-fit:cover; border-radius:8px; margin-top:8px; cursor:pointer;" onclick="openLightbox('${p.image_url}')">` : ''}
+                        </div>
+                    `).join('');
+                    feedSection.style.display = 'block';
+                } else if (feedSection) {
+                    feedSection.style.display = 'none';
+                }
             }
         }).catch(() => { });
     }
+}
 
-    // Button handlers
-    chatBtn.onclick = () => {
-        closeProfile();
-        joinRoom(roomId);
-    };
+function findFriendByRoomId(roomId) {
+    const target = Number(roomId);
+    if (!Number.isFinite(target)) return null;
+    return friendsData.find((item) => Number(item.room_id) === target) || null;
+}
 
-    delBtn.onclick = (e) => {
-        closeProfile();
-        deleteFriend(e, roomId);
-    };
+async function openProfile(roomId) {
+    let f = findFriendByRoomId(roomId);
+    if (!f && accessToken) {
+        try {
+            const res = await fetch("/friends", {
+                headers: { Authorization: `Bearer ${accessToken}` }
+            });
+            if (res.ok) {
+                friendsData = await res.json();
+                f = findFriendByRoomId(roomId);
+            }
+        } catch (_) { }
+    }
+    if (!f) return;
 
-    const relBtn = document.getElementById("profile-rel-btn");
+    renderFullProfile(f);
+
+    const chatBtn = document.getElementById("fp-chat-btn");
+    const delBtn = document.getElementById("fp-delete-btn");
+    const relBtn = document.getElementById("fp-rel-btn");
+    const lifeBtn = document.getElementById("fp-life-btn");
+
+    if (delBtn) delBtn.style.display = "";
+    if (relBtn) relBtn.style.display = "";
+    if (chatBtn) {
+        chatBtn.innerText = "DM";
+        chatBtn.onclick = () => {
+            closeProfile();
+            joinRoom(roomId);
+        };
+    }
+
+    if (delBtn) {
+        delBtn.onclick = (e) => {
+            closeProfile();
+            deleteFriend(e, roomId);
+        };
+    }
+
     if (relBtn) {
         relBtn.onclick = () => openRelationshipView(roomId);
     }
 
-    const lifeBtn = document.getElementById("profile-life-btn");
     if (lifeBtn) {
         if (isAdmin) {
             lifeBtn.style.display = "block";
@@ -554,7 +1374,6 @@ async function openProfile(roomId) {
         }
     }
 
-    // [v3.3.0] Full-page navigation
     document.body.classList.add("is-profile");
     const profilePage = document.getElementById("profile-page");
     if (profilePage) profilePage.scrollTop = 0;
@@ -878,11 +1697,16 @@ function handleNotiClick() {
 async function joinRoom(roomId) {
     currentRoomId = roomId;
     unreadCounts[roomId] = 0;
-    closeProfile();
+    closeProfile(); // In case full profile is open
     switchMobileView("chat");
 
-    const f = friendsData.find((item) => item.room_id === roomId);
-    if (!f) return;
+    let f = friendsData.find((item) => item.room_id === roomId);
+    if (!f) {
+        // If not found, it might be newly added. Wait for friends list to load.
+        await loadFriends();
+        f = friendsData.find((item) => item.room_id === roomId);
+        if (!f) return; // Still not found
+    }
 
     document.getElementById("active-friend-name").innerText = `${f.name} (${f.mbti})`;
 
@@ -964,16 +1788,159 @@ async function commitParams() {
 
 async function deleteFriend(event, roomId) {
     if (event && event.stopPropagation) event.stopPropagation();
-    if (confirm("이 친구를 삭제하시겠습니까?")) {
-        const res = await fetch(`/delete-friend/${roomId}`, {
+    // [Fix] window.confirm() was blocked; removed — delete is immediate
+    const res = await fetch(`/delete-friend/${roomId}`, {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    if (res.ok) {
+        friendsData = friendsData.filter((item) => item.room_id !== roomId);
+        selectedFriendRooms.delete(roomId);
+        renderFriendList();
+        renderChatList();
+    }
+}
+
+// [Phase 5] 친구 목록 편집 모드 토글
+function toggleFriendEditMode() {
+    isEditMode = !isEditMode;
+    selectedFriendRooms.clear();
+    renderFriendList();
+}
+
+// [Phase 5] 편집 모드에서 개별 선택 토글
+function toggleFriendSelect(roomId) {
+    if (selectedFriendRooms.has(roomId)) {
+        selectedFriendRooms.delete(roomId);
+    } else {
+        selectedFriendRooms.add(roomId);
+    }
+    // Update count label and re-render selected state
+    const selCount = document.getElementById("friend-selected-count");
+    if (selCount) selCount.innerText = `${selectedFriendRooms.size}개 선택됨`;
+
+    // Re-render to reflect selection state visually
+    renderFriendList();
+}
+
+// [Phase 5] 선택된 친구들 일괄 삭제
+async function bulkDeleteFriends() {
+    if (selectedFriendRooms.size === 0) return;
+
+    const ids = [...selectedFriendRooms];
+    // 삭제 중 UI 피드백
+    const deleteBtn = document.querySelector("#friend-bulk-bar button:nth-of-type(1)");
+    if (deleteBtn) deleteBtn.innerText = "삭제 중...";
+
+    try {
+        await Promise.all(ids.map(roomId =>
+            fetch(`/delete-friend/${roomId}`, {
+                method: "DELETE",
+                headers: { Authorization: `Bearer ${accessToken}` },
+            })
+        ));
+
+        selectedFriendRooms.clear();
+        isEditMode = false;
+
+        // 로컬 필터링 대신 서버 데이터를 새로 불러와서 UI 강제 갱신
+        await loadFriends();
+    } catch (e) {
+        console.error("Bulk delete failed", e);
+    } finally {
+        if (deleteBtn) deleteBtn.innerText = "삭제";
+    }
+}
+
+// [Phase 6] 친구 목록 전체 선택
+function selectAllFriends() {
+    if (selectedFriendRooms.size === friendsData.length) {
+        selectedFriendRooms.clear();
+    } else {
+        friendsData.forEach(f => selectedFriendRooms.add(f.room_id));
+    }
+    const selCount = document.getElementById("friend-selected-count");
+    if (selCount) selCount.innerText = `${selectedFriendRooms.size}개 선택됨`;
+    renderFriendList();
+}
+
+// [Phase 6] 관리자 이브 목록 편집 모드 토글
+function toggleAdminEveEditMode() {
+    isAdminEveEditMode = !isAdminEveEditMode;
+    selectedAdminEves.clear();
+
+    const editBtn = document.getElementById("admin-eve-edit-btn");
+    const bulkBar = document.getElementById("admin-eve-bulk-bar");
+    const label = document.getElementById("admin-eve-selected-count");
+
+    if (editBtn) editBtn.innerText = isAdminEveEditMode ? "완료" : "편집";
+    if (bulkBar) bulkBar.style.display = isAdminEveEditMode ? "flex" : "none";
+    if (label) label.innerText = "0개 선택됨";
+
+    renderAdminEves();
+}
+
+// [Phase 6] 관리자 이브 편집 모드 개별 선택
+function toggleAdminEveSelect(personaId) {
+    if (selectedAdminEves.has(personaId)) {
+        selectedAdminEves.delete(personaId);
+    } else {
+        selectedAdminEves.add(personaId);
+    }
+    const label = document.getElementById("admin-eve-selected-count");
+    if (label) label.innerText = `${selectedAdminEves.size}개 선택됨`;
+    renderAdminEves();
+}
+
+// [Phase 6] 관리자 이브 전체 선택
+function selectAllAdminEves() {
+    if (selectedAdminEves.size === adminEvesData.length) {
+        selectedAdminEves.clear();
+    } else {
+        adminEvesData.forEach(eve => selectedAdminEves.add(eve.persona_id));
+    }
+    const label = document.getElementById("admin-eve-selected-count");
+    if (label) label.innerText = `${selectedAdminEves.size}개 선택됨`;
+    renderAdminEves();
+}
+
+// [Phase 6] 관리자 이브 일괄 삭제
+async function bulkDeleteAdminEves() {
+    if (selectedAdminEves.size === 0) return;
+    if (!confirm(`선택한 ${selectedAdminEves.size}명의 이브를 영구 삭제하시겠습니까?\n(피드, 관계망, 채팅방 정보가 모두 삭제됩니다.)`)) return;
+
+    const ids = [...selectedAdminEves];
+    const deleteBtn = document.querySelector("#admin-eve-bulk-bar button:nth-of-type(2)");
+    if (deleteBtn) deleteBtn.innerText = "삭제 중...";
+
+    try {
+        const res = await fetch("/admin/bulk-delete-personas", {
             method: "DELETE",
-            headers: { Authorization: `Bearer ${accessToken}` },
+            headers: {
+                "Authorization": `Bearer ${accessToken}`,
+                "Content-Type": "application/json"
+            },
+            body: JSON.stringify({ ids })
         });
+
         if (res.ok) {
-            friendsData = friendsData.filter((item) => item.room_id !== roomId);
-            renderFriendList();
-            renderChatList();
+            selectedAdminEves.clear();
+            isAdminEveEditMode = false;
+            const bulkBar = document.getElementById("admin-eve-bulk-bar");
+            if (bulkBar) bulkBar.style.display = "none";
+            const editBtn = document.getElementById("admin-eve-edit-btn");
+            if (editBtn) editBtn.innerText = "편집";
+
+            alert(`${ids.length}명의 이브가 삭제되었습니다.`);
+            loadAdminEves();
+        } else {
+            throw new Error("Failed to delete personas");
         }
+    } catch (err) {
+        console.error("Bulk delete admin error:", err);
+        alert("삭제 중 오류가 발생했습니다.");
+    } finally {
+        if (deleteBtn) deleteBtn.innerText = "삭제";
     }
 }
 
@@ -1096,9 +2063,28 @@ async function loadAdminIdentity() {
         const schedule = document.getElementById("edit-schedule");
         const details = document.getElementById("edit-details");
         const model = document.getElementById("admin-model-select");
+        const imgPrompt = document.getElementById("admin-profile-image-prompt");
+        const imgPreview = document.getElementById("admin-profile-image-preview");
+        const imgStatus = document.getElementById("admin-profile-image-status");
+        const galleryPreview = document.getElementById("admin-profile-gallery-preview");
+        const eveRow = adminEvesData.find((eve) => (eve.rooms || []).some((r) => Number(r.room_id) === Number(adminSelectedRoomId)));
         if (schedule) schedule.value = JSON.stringify(p.daily_schedule || [], null, 2);
         if (details) details.value = JSON.stringify(p.profile_details || {}, null, 2);
         if (model) model.value = data.model_id || "gemini-3-flash-preview";
+        if (imgPrompt) imgPrompt.value = (eveRow?.image_prompt || p.image_prompt || "").trim();
+        if (imgPreview) {
+            const url = eveRow?.persona_image || p.profile_image_url || "";
+            imgPreview.src = url;
+            imgPreview.style.display = url ? "block" : "none";
+        }
+        if (galleryPreview) {
+            const gallery = Array.isArray(eveRow?.profile_images) ? eveRow.profile_images : [];
+            galleryPreview.innerHTML = gallery.map((item) => {
+                const url = (item && typeof item === "object") ? item.url : item;
+                return url ? `<img class="profile-gallery-thumb" src="${url}" alt="img">` : "";
+            }).join("");
+        }
+        if (imgStatus) imgStatus.innerText = "Ready";
     }
 }
 
@@ -1115,6 +2101,120 @@ async function saveIdentity() {
         });
         if (res.ok) alert("정체성이 저장되었습니다.");
     } catch (e) { alert("JSON 형식이 올바르지 않습니다."); }
+}
+
+async function adminGenerateProfileImage() {
+    if (!adminSelectedRoomId) return;
+    const promptEl = document.getElementById("admin-profile-image-prompt");
+    const useBaseEl = document.getElementById("admin-profile-use-base");
+    const modelEl = document.getElementById("admin-profile-image-model");
+    const statusEl = document.getElementById("admin-profile-image-status");
+    const previewEl = document.getElementById("admin-profile-image-preview");
+    const galleryPreview = document.getElementById("admin-profile-gallery-preview");
+    const btn = document.getElementById("admin-profile-generate-btn");
+    const prompt = (promptEl?.value || "").trim();
+    if (!prompt) {
+        if (statusEl) statusEl.innerText = "프롬프트를 입력하세요.";
+        return;
+    }
+    try {
+        if (btn) btn.disabled = true;
+        if (statusEl) statusEl.innerText = "Generating...";
+        const res = await fetch(`/admin/room/${adminSelectedRoomId}/profile-image`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", Authorization: `Bearer ${accessToken}` },
+            body: JSON.stringify({
+                prompt,
+                prefer_edit: (modelEl?.value === "edit") ? true : !!useBaseEl?.checked
+            })
+        });
+        const data = await res.json();
+        if (!res.ok) {
+            throw new Error(data?.detail || "image generation failed");
+        }
+        if (previewEl && data.image_url) {
+            previewEl.src = data.image_url;
+            previewEl.style.display = "block";
+        }
+        if (statusEl) statusEl.innerText = `Done (${data.model || "model"})`;
+
+        // Sync local admin list cache so list/profile reflects latest image immediately.
+        const eve = adminEvesData.find((item) => Number(item.persona_id) === Number(data.persona_id));
+        if (eve) {
+            eve.persona_image = data.image_url;
+            eve.image_prompt = prompt;
+            if (Array.isArray(data.profile_images)) eve.profile_images = data.profile_images;
+        }
+        if (galleryPreview && Array.isArray(data.profile_images)) {
+            galleryPreview.innerHTML = data.profile_images.map((item) => {
+                const url = (item && typeof item === "object") ? item.url : item;
+                return url ? `<img class="profile-gallery-thumb" src="${url}" alt="img">` : "";
+            }).join("");
+        }
+        renderAdminEves();
+    } catch (e) {
+        console.error("adminGenerateProfileImage error", e);
+        if (statusEl) statusEl.innerText = `Failed: ${e.message || ""}`;
+        alert(`프로필 이미지 생성 실패: ${e.message || ""}`);
+    } finally {
+        if (btn) btn.disabled = false;
+    }
+}
+
+async function adminAddProfileImage() {
+    if (!adminSelectedRoomId) return;
+    const promptEl = document.getElementById("admin-profile-image-prompt");
+    const modelEl = document.getElementById("admin-profile-image-model");
+    const statusEl = document.getElementById("admin-profile-image-status");
+    const previewEl = document.getElementById("admin-profile-image-preview");
+    const galleryPreview = document.getElementById("admin-profile-gallery-preview");
+    const btn = document.getElementById("admin-profile-add-btn");
+    const prompt = (promptEl?.value || "").trim();
+    const model = (modelEl?.value || "flux").trim();
+    if (!prompt) {
+        if (statusEl) statusEl.innerText = "프롬프트를 입력하세요.";
+        return;
+    }
+    try {
+        if (btn) btn.disabled = true;
+        if (statusEl) statusEl.innerText = "Adding photo...";
+        const res = await fetch(`/admin/room/${adminSelectedRoomId}/profile-image/add`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", Authorization: `Bearer ${accessToken}` },
+            body: JSON.stringify({ prompt, model })
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data?.detail || "add photo failed");
+
+        if (previewEl && data.image_url) {
+            previewEl.src = data.image_url;
+            previewEl.style.display = "block";
+        }
+        if (galleryPreview && Array.isArray(data.profile_images)) {
+            galleryPreview.innerHTML = data.profile_images.map((item) => {
+                const url = (item && typeof item === "object") ? item.url : item;
+                return url ? `<img class="profile-gallery-thumb" src="${url}" alt="img">` : "";
+            }).join("");
+        }
+        const eve = adminEvesData.find((item) => Number(item.persona_id) === Number(data.persona_id));
+        if (eve && Array.isArray(data.profile_images)) {
+            eve.profile_images = data.profile_images;
+            if (!eve.persona_image && data.profile_images[0]) {
+                const first = (data.profile_images[0] && typeof data.profile_images[0] === "object")
+                    ? data.profile_images[0].url
+                    : data.profile_images[0];
+                eve.persona_image = first || eve.persona_image;
+            }
+        }
+        if (statusEl) statusEl.innerText = `Added (${data.model || "model"})`;
+        renderAdminEves();
+    } catch (e) {
+        console.error("adminAddProfileImage error", e);
+        if (statusEl) statusEl.innerText = `Failed: ${e.message || ""}`;
+        alert(`추가 이미지 생성 실패: ${e.message || ""}`);
+    } finally {
+        if (btn) btn.disabled = false;
+    }
 }
 
 async function sendGhostMsg() {
@@ -1196,6 +2296,7 @@ async function sendGlobalNotice() {
 function updateUIByAuth() {
     const userDisplay = document.getElementById("user-display");
     const navDev = document.getElementById("nav-dev");
+    const logoutBtn = document.getElementById("logout-btn");
     if (accessToken) {
         if (userDisplay) userDisplay.innerText = currentUsername || "";
 
@@ -1207,6 +2308,20 @@ function updateUIByAuth() {
             if (navDev) navDev.style.display = "flex";
         } else {
             if (navDev) navDev.style.display = "none";
+        }
+        if (logoutBtn) {
+            logoutBtn.innerText = "로그아웃";
+            logoutBtn.style.background = "#ff3b30";
+            logoutBtn.style.color = "white";
+        }
+    } else {
+        if (userDisplay) userDisplay.innerText = "";
+        if (navDev) navDev.style.display = "none";
+        document.body.classList.remove("dev-unlocked", "is-dev");
+        if (logoutBtn) {
+            logoutBtn.innerText = "로그인";
+            logoutBtn.style.background = "#22c55e";
+            logoutBtn.style.color = "white";
         }
     }
 }
@@ -1232,6 +2347,7 @@ function showAuthForms() {
 function previewProfileImage() {
     const fileInput = document.getElementById("profile-image-input");
     const preview = document.getElementById("preview-avatar");
+    const galleryPreview = document.getElementById("profile-gallery-preview");
 
     if (fileInput.files && fileInput.files[0]) {
         const reader = new FileReader();
@@ -1240,7 +2356,60 @@ function previewProfileImage() {
             preview.innerHTML = `<img src="${e.target.result}" style="width:100%;height:100%;object-fit:cover;border-radius:50%;">`;
         };
         reader.readAsDataURL(fileInput.files[0]);
+
+        if (galleryPreview) {
+            const files = Array.from(fileInput.files).slice(0, 3);
+            galleryPreview.innerHTML = "";
+            files.forEach((file) => {
+                const fr = new FileReader();
+                fr.onload = (evt) => {
+                    const url = evt.target?.result || "";
+                    if (!url) return;
+                    galleryPreview.insertAdjacentHTML("beforeend", `<img class="profile-gallery-thumb" src="${url}" alt="preview">`);
+                };
+                fr.readAsDataURL(file);
+            });
+        }
     }
+}
+
+async function resizeImageFileToDataUrl(file, options = {}) {
+    const maxSide = Number(options.maxSide || 1024);
+    const quality = Number(options.quality || 0.86);
+
+    const readAsDataUrl = (blob) => new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = (e) => resolve(e.target.result);
+        reader.onerror = reject;
+        reader.readAsDataURL(blob);
+    });
+
+    const originalDataUrl = await readAsDataUrl(file);
+    const image = await new Promise((resolve, reject) => {
+        const img = new Image();
+        img.onload = () => resolve(img);
+        img.onerror = reject;
+        img.src = originalDataUrl;
+    });
+
+    const srcW = image.width || 0;
+    const srcH = image.height || 0;
+    if (!srcW || !srcH) return originalDataUrl;
+
+    const longest = Math.max(srcW, srcH);
+    if (longest <= maxSide) return originalDataUrl;
+
+    const scale = maxSide / longest;
+    const dstW = Math.max(1, Math.round(srcW * scale));
+    const dstH = Math.max(1, Math.round(srcH * scale));
+    const canvas = document.createElement("canvas");
+    canvas.width = dstW;
+    canvas.height = dstH;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return originalDataUrl;
+
+    ctx.drawImage(image, 0, 0, dstW, dstH);
+    return canvas.toDataURL("image/jpeg", quality);
 }
 
 // 기본 아바타 생성 (아이디 첫 글자 + 랜덤 색상)
@@ -1269,7 +2438,45 @@ function showProfileSetup() {
     if (profileOverlay) {
         profileOverlay.style.display = "flex";
         generateDefaultAvatar(currentUsername);
+        setProfileMbtiDial("INFP");
     }
+}
+
+function setProfileMbtiDial(mbti = "INFP") {
+    const normalized = (mbti || "INFP").toUpperCase();
+    const axes = [
+        { id: "mbti-axis-ei", value: normalized[0] === "E" ? "E" : "I" },
+        { id: "mbti-axis-sn", value: normalized[1] === "S" ? "S" : "N" },
+        { id: "mbti-axis-tf", value: normalized[2] === "T" ? "T" : "F" },
+        { id: "mbti-axis-jp", value: normalized[3] === "J" ? "J" : "P" }
+    ];
+    axes.forEach(({ id, value }) => {
+        const axis = document.getElementById(id);
+        if (!axis) return;
+        const items = [...axis.querySelectorAll(".mbti-choice-btn")];
+        items.forEach((el) => {
+            el.classList.toggle("active", el.dataset.value === value);
+            el.onclick = () => {
+                axis.querySelectorAll(".mbti-choice-btn").forEach((s) => s.classList.remove("active"));
+                el.classList.add("active");
+                updateProfileMbtiPreview();
+            };
+        });
+    });
+    updateProfileMbtiPreview();
+}
+
+function getProfileMbtiFromDial() {
+    const pick = (axisId, fallback) => {
+        const active = document.querySelector(`#${axisId} .mbti-choice-btn.active`);
+        return active?.dataset?.value || fallback;
+    };
+    return `${pick("mbti-axis-ei", "I")}${pick("mbti-axis-sn", "N")}${pick("mbti-axis-tf", "F")}${pick("mbti-axis-jp", "P")}`;
+}
+
+function updateProfileMbtiPreview() {
+    const el = document.getElementById("profile-mbti-preview");
+    if (el) el.innerText = getProfileMbtiFromDial();
 }
 
 // 프로필 저장
@@ -1290,14 +2497,9 @@ async function saveUserProfile() {
             display_name: displayName,
             age: parseInt(document.getElementById("profile-age").value) || null,
             gender: document.getElementById("profile-gender").value || null,
-            mbti: document.getElementById("profile-mbti").value || null,
+            mbti: getProfileMbtiFromDial(),
             profile_details: {
-                intro: document.getElementById("profile-intro").value || "",
-                job: document.getElementById("profile-job").value || "",
-                goal: document.getElementById("profile-goal").value || "",
-                lifestyle: document.getElementById("profile-lifestyle").value || "",
-                interests: document.getElementById("profile-interests").value ? document.getElementById("profile-interests").value.split(",").map(s => s.trim()).filter(s => s) : [],
-                tmi: document.getElementById("profile-tmi").value || ""
+                hook: document.getElementById("profile-hook").value || ""
             }
         };
 
@@ -1322,21 +2524,25 @@ async function saveUserProfile() {
             if (fileInput.files && fileInput.files[0]) {
                 btn.innerText = "이미지 업로드 중...";
                 try {
-                    const reader = new FileReader();
-                    reader.onload = async function (e) {
-                        const imgRes = await fetch("/api/user/profile/image", {
-                            method: "POST",
-                            headers: {
-                                "Content-Type": "application/json",
-                                "Authorization": `Bearer ${accessToken}`
-                            },
-                            body: JSON.stringify({ image_url: e.target.result })
+                    const files = Array.from(fileInput.files).slice(0, 3);
+                    const imageUrls = [];
+                    for (const file of files) {
+                        const resizedDataUrl = await resizeImageFileToDataUrl(file, {
+                            maxSide: 1024,
+                            quality: 0.86
                         });
-                        if (!imgRes.ok) console.error("Image upload failed");
-                    };
-                    reader.readAsDataURL(fileInput.files[0]);
-                    // 이미지 업로드는 비동기로 진행되므로 약간의 지연 후 완료 처리
-                    await new Promise(r => setTimeout(r, 1000));
+                        imageUrls.push(resizedDataUrl);
+                    }
+
+                    const imgRes = await fetch("/api/user/profile/images", {
+                        method: "POST",
+                        headers: {
+                            "Content-Type": "application/json",
+                            "Authorization": `Bearer ${accessToken}`
+                        },
+                        body: JSON.stringify({ image_urls: imageUrls })
+                    });
+                    if (!imgRes.ok) console.error("Image upload failed");
                 } catch (imgErr) {
                     console.error("Image processing error:", imgErr);
                 }
@@ -1443,15 +2649,10 @@ async function editMyProfile() {
             if (profile.display_name) document.getElementById("profile-display-name").value = profile.display_name;
             if (profile.age) document.getElementById("profile-age").value = profile.age;
             if (profile.gender) document.getElementById("profile-gender").value = profile.gender;
-            if (profile.mbti) document.getElementById("profile-mbti").value = profile.mbti;
+            setProfileMbtiDial(profile.mbti || "INFP");
 
             if (profile.profile_details) {
-                if (profile.profile_details.intro) document.getElementById("profile-intro").value = profile.profile_details.intro;
-                if (profile.profile_details.job) document.getElementById("profile-job").value = profile.profile_details.job;
-                if (profile.profile_details.goal) document.getElementById("profile-goal").value = profile.profile_details.goal;
-                if (profile.profile_details.lifestyle) document.getElementById("profile-lifestyle").value = profile.profile_details.lifestyle;
-                if (profile.profile_details.interests) document.getElementById("profile-interests").value = profile.profile_details.interests.join(", ");
-                if (profile.profile_details.tmi) document.getElementById("profile-tmi").value = profile.profile_details.tmi;
+                document.getElementById("profile-hook").value = profile.profile_details.hook || profile.profile_details.intro || "";
             }
 
             // 아바타 미리보기
@@ -1461,6 +2662,16 @@ async function editMyProfile() {
                 preview.innerHTML = `<img src="${profile.profile_image_url}" style="width:100%;height:100%;object-fit:cover;border-radius:50%;">`;
             } else {
                 generateDefaultAvatar(profile.display_name || currentUsername);
+            }
+            const galleryPreview = document.getElementById("profile-gallery-preview");
+            if (galleryPreview) {
+                const images = Array.isArray(profile.profile_images) ? profile.profile_images : [];
+                galleryPreview.innerHTML = images
+                    .map((item) => {
+                        const url = (item && typeof item === "object") ? item.url : item;
+                        return url ? `<img class="profile-gallery-thumb" src="${url}" alt="photo">` : "";
+                    })
+                    .join("");
             }
 
             // 프로필 작성 화면 표시
@@ -1472,57 +2683,304 @@ async function editMyProfile() {
 }
 
 // [v2.0.0] Social Feed Logic
-async function loadFeed() {
+function bindFeedInfiniteScroll() {
+    if (feedScrollBound) return;
+    const container = document.getElementById("feed-list");
+    if (!container) return;
+    container.addEventListener("scroll", () => {
+        if (feedLoading || !feedHasMore) return;
+        const threshold = 240;
+        if (container.scrollTop + container.clientHeight >= container.scrollHeight - threshold) {
+            loadFeed(false);
+        }
+    });
+    feedScrollBound = true;
+}
+
+function bindFeedPullToRefresh() {
+    if (feedPullBound) return;
+    const container = document.getElementById("feed-list");
+    const indicator = document.getElementById("feed-pull-indicator");
+    if (!container) return;
+
+    let startY = 0;
+    let pulling = false;
+    let pull = 0;
+    const threshold = 72;
+
+    container.addEventListener("touchstart", (e) => {
+        if (container.scrollTop > 0) return;
+        startY = e.touches[0].clientY;
+        pulling = true;
+        pull = 0;
+    }, { passive: true });
+
+    container.addEventListener("touchmove", (e) => {
+        if (!pulling) return;
+        const y = e.touches[0].clientY;
+        const delta = y - startY;
+        if (delta <= 0 || container.scrollTop > 0) return;
+        pull = Math.min(100, delta * 0.45);
+        container.style.transform = `translateY(${pull}px)`;
+        if (indicator) {
+            indicator.style.display = "block";
+            indicator.innerText = pull >= threshold ? "놓으면 새로고침" : "당겨서 새로고침";
+        }
+    }, { passive: true });
+
+    container.addEventListener("touchend", async () => {
+        if (!pulling) return;
+        pulling = false;
+        container.style.transform = "translateY(0)";
+        if (indicator) indicator.style.display = "none";
+        if (pull >= threshold) {
+            await loadFeed(true);
+        }
+        pull = 0;
+    });
+
+    feedPullBound = true;
+}
+
+async function loadFeed(reset = false) {
+    const container = document.getElementById("feed-list");
+    const composer = document.getElementById("user-feed-composer");
+    if (composer) composer.style.display = accessToken ? "block" : "none";
+    if (!container) return;
+    if (feedLoading) return;
+    if (!reset && !feedHasMore) return;
+
+    if (reset) {
+        feedOffset = 0;
+        feedHasMore = true;
+        // [Phase 5] Skeleton Loading UI
+        container.innerHTML = Array(3).fill(`
+            <article class="feed-card skeleton-card">
+                <div class="feed-avatar-col"><div class="skeleton-avatar"></div></div>
+                <div class="feed-content-col">
+                    <div class="skeleton-text short"></div>
+                    <div class="skeleton-text long"></div>
+                    <div class="skeleton-box"></div>
+                </div>
+            </article>
+        `).join("");
+    }
+
+    feedLoading = true;
     try {
-        const res = await fetch("/api/feed", {
-            headers: { Authorization: `Bearer ${accessToken}` }
-        });
+        const headers = {};
+        if (accessToken) headers.Authorization = `Bearer ${accessToken}`;
+
+        const res = await fetch(`/api/feed?offset=${feedOffset}&limit=${FEED_PAGE_SIZE}`, { headers });
         if (res.ok) {
-            const posts = await res.json();
-            if (posts.length === 0) {
-                await seedFeed();
-            } else {
-                renderFeed(posts);
-            }
+            const data = await res.json();
+            const posts = Array.isArray(data) ? data : (data.items || []);
+            const hasMore = Array.isArray(data) ? (posts.length === FEED_PAGE_SIZE) : !!data.has_more;
+            renderFeed(posts, !reset);
+            feedOffset += posts.length;
+            feedHasMore = hasMore;
+            bindFeedInfiniteScroll();
+            bindFeedPullToRefresh();
         }
     } catch (e) {
         console.error("Feed load failed", e);
+        if (container) container.innerHTML = "<div style='padding:20px; text-align:center;'>Feed failed to load.</div>";
+    } finally {
+        feedLoading = false;
     }
 }
 
-async function seedFeed() {
-    try {
-        const res = await fetch("/api/feed/seed", { method: "POST", headers: { Authorization: `Bearer ${accessToken}` } });
-        if (res.ok) loadFeed();
-    } catch (e) { console.error("Feed seed failed", e); }
+function openEveProfileFromFeed(personaId, roomId) {
+    if (!personaId) return;
+    let targetRoomId = roomId || null;
+    if (!targetRoomId) {
+        const friend = friendsData.find((f) => f.persona_id === personaId);
+        if (friend) targetRoomId = friend.room_id;
+    }
+    if (targetRoomId) {
+        openProfile(targetRoomId);
+        return;
+    }
+    fetch(`/api/public/persona/${personaId}`)
+        .then((r) => (r.ok ? r.json() : null))
+        .then((p) => {
+            if (!p) {
+                openMiniProfile(personaId, null);
+                return;
+            }
+            renderFullProfile({
+                room_id: null,
+                persona_id: p.id,
+                name: p.name,
+                age: p.age,
+                gender: p.gender,
+                mbti: p.mbti,
+                profile_image_url: p.profile_image_url,
+                profile_images: Array.isArray(p.profile_images) ? p.profile_images : [],
+                image_prompt: "",
+                profile_details: p.profile_details || { hook: p.intro || "" },
+                relationship_category: "Not friends",
+                p_seriousness: null,
+                p_friendliness: null,
+                p_rationality: null,
+                p_slang: null,
+                v_likeability: null,
+                v_v_mood: null,
+                v_relationship: null,
+                v_erotic: null
+            });
+
+            const chatBtn = document.getElementById("fp-chat-btn");
+            const delBtn = document.getElementById("fp-delete-btn");
+            const relBtn = document.getElementById("fp-rel-btn");
+            const lifeBtn = document.getElementById("fp-life-btn");
+            if (chatBtn) {
+                chatBtn.innerText = "Add Friend";
+                chatBtn.onclick = () => {
+                    openMiniProfile(personaId, null);
+                    closeProfile();
+                };
+            }
+            if (delBtn) delBtn.style.display = "none";
+            if (relBtn) relBtn.style.display = "none";
+            if (lifeBtn) lifeBtn.style.display = "none";
+
+            document.body.classList.add("is-profile");
+            const profilePage = document.getElementById("profile-page");
+            if (profilePage) profilePage.scrollTop = 0;
+        })
+        .catch(() => openMiniProfile(personaId, null));
 }
 
-function renderFeed(posts) {
+function onUserFeedImageSelected(inputEl) {
+    const file = inputEl?.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (e) => {
+        userFeedImageData = e.target.result || "";
+        const preview = document.getElementById("user-feed-image-preview");
+        const pill = document.getElementById("user-feed-image-pill");
+        if (preview && userFeedImageData) {
+            preview.src = userFeedImageData;
+        }
+        if (pill) pill.style.display = "inline-flex";
+    };
+    reader.readAsDataURL(file);
+}
+
+function triggerFeedImagePicker() {
+    const input = document.getElementById("user-feed-image-file");
+    if (input) input.click();
+}
+
+function clearUserFeedImage() {
+    userFeedImageData = "";
+    const input = document.getElementById("user-feed-image-file");
+    const preview = document.getElementById("user-feed-image-preview");
+    const pill = document.getElementById("user-feed-image-pill");
+    if (input) input.value = "";
+    if (preview) {
+        preview.src = "";
+    }
+    if (pill) pill.style.display = "none";
+}
+
+async function submitUserFeedPost() {
+    if (!accessToken) return showAuthModal();
+    const contentEl = document.getElementById("user-feed-content");
+    const submitBtn = document.getElementById("user-feed-submit-btn");
+    if (!contentEl || !submitBtn) return;
+
+    const content = contentEl.value.trim();
+    if (!content) {
+        alert("피드 내용을 입력해주세요.");
+        return;
+    }
+
+    const payload = { content };
+    if (userFeedImageData) payload.image_url = userFeedImageData;
+
+    try {
+        submitBtn.disabled = true;
+        submitBtn.style.opacity = 0.6;
+        const res = await fetch("/api/feed/post", {
+            method: "POST",
+            headers: {
+                "Authorization": `Bearer ${accessToken}`,
+                "Content-Type": "application/json"
+            },
+            body: JSON.stringify(payload)
+        });
+        if (!res.ok) {
+            let msg = "피드 업로드 실패";
+            try {
+                const err = await res.json();
+                msg = err.detail || msg;
+            } catch (_) { }
+            throw new Error(msg);
+        }
+
+        contentEl.value = "";
+        clearUserFeedImage();
+        await loadFeed(true);
+    } catch (e) {
+        alert(e.message || "피드 업로드 실패");
+    } finally {
+        submitBtn.disabled = false;
+        submitBtn.style.opacity = 1;
+    }
+}
+
+function renderFeed(posts, append = false) {
     const container = document.getElementById("feed-list");
     if (!container) return;
 
-    container.innerHTML = posts.map(post => {
+    const html = posts.map(post => {
+        const promptParam = (isAdmin && post.image_prompt) ? post.image_prompt.replace(/'/g, "\\'") : "";
+        const canOpenPersonaProfile = post.author_type === "persona" && post.author_id;
+        const profileClick = canOpenPersonaProfile ? `onclick="openEveProfileFromFeed(${post.author_id}, ${post.room_id ? post.room_id : 'null'})"` : "";
+        const dmClick = canOpenPersonaProfile ? `onclick="handleFeedDMClick(${post.author_id}, ${post.room_id ? post.room_id : 'null'})"` : "";
+        const imageClick = canOpenPersonaProfile
+            ? (isAdmin
+                ? `onclick="openLightbox('${post.image_url}', '${promptParam}')"`
+                : `onclick="openEveProfileFromFeed(${post.author_id}, ${post.room_id ? post.room_id : 'null'})"`)
+            : `onclick="openLightbox('${post.image_url}', '${promptParam}')"`;
         // 이미지 HTML
         const imageHtml = post.image_url
-            ? `<div class="feed-image-container"><img src="${post.image_url}" class="feed-image" loading="lazy" onclick="openLightbox('${post.image_url}')"></div>`
+            ? `<div class="feed-image-container"><img src="${post.image_url}" class="feed-image" loading="lazy" ${imageClick}></div>`
             : "";
 
         // 댓글 HTML (숨김 처리)
         const commentsHtml = post.comments.map(c => `
             <div class="feed-comment-item">
                 <div class="comment-author-row">
-                    <img src="${c.author_image || 'https://via.placeholder.com/20'}" class="comment-avatar">
-                    <span class="comment-username">${c.author_name}</span>
+                    <img src="${c.author_image || 'https://via.placeholder.com/20'}" class="comment-avatar" style="${c.author_type === 'persona' ? 'cursor:pointer;' : ''}" ${c.author_type === 'persona' ? `onclick="openEveProfileFromFeed(${c.author_id}, ${c.room_id ? c.room_id : 'null'})"` : ""}>
+                    <span class="comment-username" style="${c.author_type === 'persona' ? 'cursor:pointer;' : ''}" ${c.author_type === 'persona' ? `onclick="openEveProfileFromFeed(${c.author_id}, ${c.room_id ? c.room_id : 'null'})"` : ""}>${c.author_name}</span>
                     <span class="comment-time">${c.created_at.split(" ")[1] || ""}</span>
+                    ${c.can_delete ? `<button class="feed-comment-del-btn" onclick="deleteFeedComment(${c.id})" style="margin-left:auto; border:none; background:transparent; color:#ff3b30; font-size:11px; cursor:pointer;">삭제</button>` : ""}
                 </div>
                 <div class="comment-content">${c.content}</div>
             </div>
         `).join("");
 
+        const taggedPersonas = Array.isArray(post.tagged_personas) ? post.tagged_personas : [];
+        const tagActivity = (post.tag_activity || "").trim();
+        const tagsHtml = taggedPersonas.length
+            ? `<div class="feed-tag-row">
+                <span class="feed-tag-activity">${tagActivity || '함께한 이브'}</span>
+                ${taggedPersonas.map(t => {
+                const click = t.persona_id
+                    ? `onclick="event.stopPropagation();openEveProfileFromFeed(${t.persona_id}, ${t.room_id ? t.room_id : 'null'})"`
+                    : "";
+                return `<span class="feed-tag-chip" ${click}>@${t.name}</span>`;
+            }).join("")}
+            </div>`
+            : "";
+
         return `
         <article class="feed-card">
             <!-- 좌측: 아바타 -->
-            <div class="feed-avatar-col" onclick="openProfile(${post.room_id})">
+            <div class="feed-avatar-col" ${profileClick}>
                 <div class="feed-avatar">
                    <img src="${post.author_image || 'https://via.placeholder.com/32'}" onerror="this.style.display='none'">
                    ${!post.author_image ? post.author_name[0] : ''}
@@ -1532,24 +2990,28 @@ function renderFeed(posts) {
             <!-- 우측: 콘텐츠 -->
             <div class="feed-content-col">
                 <div class="feed-header-row">
-                    <div class="feed-username" onclick="openProfile(${post.room_id})">${post.author_name}</div>
-                    <div class="feed-time">${post.created_at}</div>
+                    <div class="feed-username" ${profileClick}>${post.author_name}</div>
+                    <div style="display:flex; align-items:center; gap:8px;">
+                        <div class="feed-time">${post.created_at}</div>
+                        ${post.can_delete ? `<button onclick="deleteFeedPost(${post.id})" style="border:none; background:transparent; color:#ff3b30; font-size:12px; cursor:pointer;">삭제</button>` : ""}
+                    </div>
                 </div>
                 
                 <div class="feed-text">${post.content}</div>
+                ${tagsHtml}
                 
                 ${imageHtml}
                 
                 <div class="feed-actions">
-                    <button class="feed-action-btn">
-                        <span>❤️</span> 
+                    <button class="feed-action-btn" onclick="toggleFeedLike(${post.id}, this)">
+                        <span>${post.has_liked ? '❤️' : '🤍'}</span> 
                         <span class="feed-count" style="${post.like_count > 0 ? '' : 'display:none'}">${post.like_count}</span>
                     </button>
                     <button class="feed-action-btn" onclick="toggleComments(${post.id})">
                         <span>💬</span>
                         <span class="feed-count" style="${post.comments.length > 0 ? '' : 'display:none'}">${post.comments.length}</span>
                     </button>
-                    <button class="feed-action-btn" onclick="confirmDM(${post.room_id})">
+                    <button class="feed-action-btn" ${dmClick} ${canOpenPersonaProfile ? "" : "disabled"} style="${canOpenPersonaProfile ? "" : "opacity:0.45; cursor:not-allowed;"}">
                         <span>💌</span>
                     </button>
                 </div>
@@ -1557,10 +3019,21 @@ function renderFeed(posts) {
                 <!-- 댓글 영역 (토글) -->
                 <div id="comments-${post.id}" class="feed-comments-section" style="display: none;">
                     ${commentsHtml}
+                    <!-- [Phase 4] 유저 댓글 입력창 -->
+                    <div class="feed-comment-input-row" style="display:flex; margin-top:10px; gap:8px;">
+                        <input type="text" id="feed-comment-input-${post.id}" placeholder="댓글 달기..." style="flex:1; border:1px solid var(--border-color); border-radius:20px; padding:8px 12px; font-size:13px; background:var(--bg-card); color:var(--text-main);">
+                        <button onclick="postFeedComment(${post.id})" style="background:#F0457A; color:white; border:none; border-radius:20px; padding:0 15px; font-size:13px; font-weight:600; cursor:pointer;">게시</button>
+                    </div>
                 </div>
             </div>
         </article>`;
     }).join("");
+
+    if (append) {
+        container.insertAdjacentHTML("beforeend", html);
+    } else {
+        container.innerHTML = html;
+    }
 }
 
 // [v2.0.0] 댓글 토글
@@ -1571,7 +3044,102 @@ function toggleComments(postId) {
     }
 }
 
+// [Phase 4] 피드 액션 연동
+async function toggleFeedLike(postId, btnElement) {
+    if (!accessToken) return showAuthModal();
+    try {
+        const res = await fetch(`/api/feed/${postId}/like`, {
+            method: "POST",
+            headers: { Authorization: `Bearer ${accessToken}` }
+        });
+        if (res.ok) {
+            const data = await res.json();
+            const countSpan = btnElement.querySelector('.feed-count');
+            countSpan.textContent = data.like_count;
+            countSpan.style.display = data.like_count > 0 ? '' : 'display:none';
+            // Scale animation for feedback
+            const iconSpan = btnElement.querySelector('span:first-child');
+            if (data.has_liked) {
+                iconSpan.textContent = '❤️';
+                iconSpan.classList.add('heart-bounce');
+                setTimeout(() => iconSpan.classList.remove('heart-bounce'), 300);
+            } else {
+                iconSpan.textContent = '🤍';
+            }
+        }
+    } catch (e) { console.error("Like failed", e); }
+}
+
+async function postFeedComment(postId) {
+    if (!accessToken) return showAuthModal();
+    const inputEl = document.getElementById(`feed-comment-input-${postId}`);
+    const content = inputEl.value.trim();
+    if (!content) return;
+
+    try {
+        const res = await fetch(`/api/feed/${postId}/comment`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", Authorization: `Bearer ${accessToken}` },
+            body: JSON.stringify({ content })
+        });
+        if (res.ok) {
+            inputEl.value = "";
+            loadFeed(true); // 댓글 등록 완료 후 전체 피드 새로고침
+        } else {
+            alert("댓글 등록에 실패했습니다.");
+        }
+    } catch (e) {
+        console.error("Comment post failed", e);
+    }
+}
+
+async function deleteFeedPost(postId) {
+    if (!accessToken) return showAuthModal();
+    if (!confirm("이 피드를 삭제할까요?")) return;
+    try {
+        const res = await fetch(`/api/feed/${postId}`, {
+            method: "DELETE",
+            headers: { Authorization: `Bearer ${accessToken}` }
+        });
+        if (!res.ok) {
+            let msg = "피드 삭제 실패";
+            try {
+                const err = await res.json();
+                msg = err.detail || msg;
+            } catch (_) { }
+            throw new Error(msg);
+        }
+        await loadFeed(true);
+    } catch (e) {
+        alert(e.message || "피드 삭제 실패");
+    }
+}
+
+async function deleteFeedComment(commentId) {
+    if (!accessToken) return showAuthModal();
+    if (!confirm("이 댓글을 삭제할까요?")) return;
+    try {
+        const res = await fetch(`/api/feed/comment/${commentId}`, {
+            method: "DELETE",
+            headers: { Authorization: `Bearer ${accessToken}` }
+        });
+        if (!res.ok) {
+            let msg = "댓글 삭제 실패";
+            try {
+                const err = await res.json();
+                msg = err.detail || msg;
+            } catch (_) { }
+            throw new Error(msg);
+        }
+        await loadFeed(true);
+    } catch (e) {
+        alert(e.message || "댓글 삭제 실패");
+    }
+}
+
 // [v2.0.0] World Map Logic
+let mapDataCache = null;
+
 async function loadMap() {
     try {
         const res = await fetch("/api/map", {
@@ -1579,6 +3147,7 @@ async function loadMap() {
         });
         if (res.ok) {
             const data = await res.json();
+            mapDataCache = data;
             renderMap(data);
         }
     } catch (e) {
@@ -1623,7 +3192,7 @@ function renderMap(data) {
         ` : "";
 
         return `
-            <div class="district-card" data-theme="${dName}" onclick="alert('${dName} 상세 정보 준비 중...')">
+            <div class="district-card" data-theme="${dName}" onclick="openMapDistrictModal('${dName}')">
                 <div class="district-header">
                     <div class="district-info">
                         <div class="district-name">${dName}</div>
@@ -1644,6 +3213,90 @@ function renderMap(data) {
     }).join("");
 }
 
+function closeMapDistrictModal() {
+    const overlay = document.getElementById("map-district-overlay");
+    if (overlay) overlay.style.display = "none";
+}
+
+function openMapDistrictModal(districtName) {
+    const overlay = document.getElementById("map-district-overlay");
+    const title = document.getElementById("map-district-title");
+    const list = document.getElementById("map-district-eves");
+    if (!overlay || !title || !list) return;
+
+    title.innerText = `${districtName} · 현재 이브`;
+    const eves = (mapDataCache?.district_eves || []).filter(e => e.district === districtName);
+    if (eves.length === 0) {
+        list.innerHTML = `<div style="grid-column:1/-1; font-size:13px; color:var(--text-sub);">현재 이 지역에 이브가 없습니다.</div>`;
+    } else {
+        list.innerHTML = eves.map(e => `
+            <button type="button"
+                onclick="openMapEveFullProfile(${e.id}); event.stopPropagation();"
+                style="border:none; background:transparent; padding:0; cursor:pointer; text-align:center;">
+                <img src="${e.image || 'https://via.placeholder.com/60'}"
+                    alt="${e.name}"
+                    style="width:56px; height:56px; border-radius:50%; object-fit:cover; border:1px solid var(--border); display:block; margin:0 auto 6px;">
+                <div style="font-size:11px; color:var(--text-main); font-weight:700; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${e.name}</div>
+            </button>
+        `).join("");
+    }
+
+    overlay.style.display = "flex";
+}
+
+function openMapEveFullProfile(personaId) {
+    const eve = (mapDataCache?.district_eves || []).find(e => e.id === personaId);
+    if (!eve) return;
+    closeMapDistrictModal();
+
+    if (eve.room_id) {
+        openProfile(eve.room_id);
+        return;
+    }
+
+    renderFullProfile({
+        room_id: null,
+        persona_id: eve.id,
+        name: eve.name,
+        age: eve.age,
+        gender: eve.gender,
+        mbti: eve.mbti,
+        profile_image_url: eve.image,
+        profile_images: Array.isArray(eve.profile_images) ? eve.profile_images : [],
+        image_prompt: eve.image_prompt,
+        profile_details: eve.profile_details || {},
+        relationship_category: "Not friends",
+        p_seriousness: null,
+        p_friendliness: null,
+        p_rationality: null,
+        p_slang: null,
+        v_likeability: null,
+        v_v_mood: null,
+        v_relationship: null,
+        v_erotic: null
+    });
+
+    const chatBtn = document.getElementById("fp-chat-btn");
+    const delBtn = document.getElementById("fp-delete-btn");
+    const relBtn = document.getElementById("fp-rel-btn");
+    const lifeBtn = document.getElementById("fp-life-btn");
+
+    if (chatBtn) {
+        chatBtn.innerText = "Add Friend";
+        chatBtn.onclick = () => {
+            openMiniProfile(eve.id, null);
+            closeProfile();
+        };
+    }
+    if (delBtn) delBtn.style.display = "none";
+    if (relBtn) relBtn.style.display = "none";
+    if (lifeBtn) lifeBtn.style.display = "none";
+
+    document.body.classList.add("is-profile");
+    const profilePage = document.getElementById("profile-page");
+    if (profilePage) profilePage.scrollTop = 0;
+}
+
 function getDistrictDesc(name) {
     const desc = {
         "루미나 시티": "비즈니스 & 트렌드",
@@ -1655,164 +3308,18 @@ function getDistrictDesc(name) {
     return desc[name] || "";
 }
 
-// [v2.0.0] DM 확인 모달 로직
-let pendingDmRoomId = null;
-
-function confirmDM(roomId) {
-    pendingDmRoomId = roomId;
-    const overlay = document.getElementById("dm-confirm-overlay");
-    const confirmBtn = document.getElementById("confirm-dm-btn");
-
-    if (confirmBtn) {
-        confirmBtn.onclick = () => {
-            closeConfirmDM();
-            joinRoom(pendingDmRoomId);
-        };
-    }
-
-    if (overlay) overlay.style.display = "flex";
-}
-
-function closeConfirmDM() {
-    pendingDmRoomId = null;
-    const overlay = document.getElementById("dm-confirm-overlay");
-    if (overlay) overlay.style.display = "none";
-}
-
-
-// ---------------------------------------------------------
-// [v4.0.0] EVE FACTORY: 배치 이브 생성
-// ---------------------------------------------------------
-
-function syncWeights(changed) {
-    const w = document.getElementById("weight-white");
-    const b = document.getElementById("weight-black");
-    const a = document.getElementById("weight-asian");
-
-    let wv = parseInt(w.value), bv = parseInt(b.value), av = parseInt(a.value);
-    const total = wv + bv + av;
-
-    // 합이 100을 초과하면 나머지 두 값을 비례 축소
-    if (total > 100) {
-        if (changed === 'white') {
-            const remain = 100 - wv;
-            const otherTotal = bv + av || 1;
-            bv = Math.round(bv / otherTotal * remain);
-            av = remain - bv;
-        } else if (changed === 'black') {
-            const remain = 100 - bv;
-            const otherTotal = wv + av || 1;
-            wv = Math.round(wv / otherTotal * remain);
-            av = remain - wv;
-        } else {
-            const remain = 100 - av;
-            const otherTotal = wv + bv || 1;
-            wv = Math.round(wv / otherTotal * remain);
-            bv = remain - wv;
-        }
-    }
-
-    w.value = Math.max(0, wv); b.value = Math.max(0, bv); a.value = Math.max(0, av);
-    document.getElementById("weight-white-val").textContent = w.value;
-    document.getElementById("weight-black-val").textContent = b.value;
-    document.getElementById("weight-asian-val").textContent = a.value;
-    document.getElementById("weight-sum").textContent = parseInt(w.value) + parseInt(b.value) + parseInt(a.value);
-}
-
-let batchPollingTimer = null;
-
-async function startBatchCreation() {
-    const count = parseInt(document.getElementById("batch-count").value);
-    const white = parseInt(document.getElementById("weight-white").value);
-    const black = parseInt(document.getElementById("weight-black").value);
-    const asian = parseInt(document.getElementById("weight-asian").value);
-
-    if (count < 1 || count > 200) { alert("1~200 사이로 입력하세요"); return; }
-
-    const btn = document.getElementById("batch-start-btn");
-    btn.disabled = true;
-    btn.textContent = "⏳ 생성 중...";
-
-    document.getElementById("batch-progress").style.display = "block";
-    document.getElementById("batch-result-list").innerHTML = "";
-    document.getElementById("batch-error-log").textContent = "";
-
-    try {
-        const res = await fetch("/admin/batch-create-eves", {
-            method: "POST",
-            headers: { "Content-Type": "application/json", "Authorization": `Bearer ${localStorage.getItem("token")}` },
-            body: JSON.stringify({ count, white, black, asian })
-        });
-        const data = await res.json();
-        if (!res.ok) { alert(data.detail || "오류"); btn.disabled = false; btn.textContent = "🚀 배치 생성 시작"; return; }
-
-        pollBatchStatus(data.job_id, count);
-    } catch (e) {
-        alert("요청 실패: " + e.message);
-        btn.disabled = false;
-        btn.textContent = "🚀 배치 생성 시작";
+// [Phase 5] DM 버튼 클릭 핸들러 (피드)
+function handleFeedDMClick(authorId, roomId) {
+    if (!accessToken) return showAuthModal();
+    if (roomId) {
+        joinRoom(roomId);
+    } else {
+        openMiniProfile(authorId, null);
     }
 }
 
-function pollBatchStatus(jobId, total) {
-    if (batchPollingTimer) clearInterval(batchPollingTimer);
-
-    batchPollingTimer = setInterval(async () => {
-        try {
-            const res = await fetch(`/admin/batch-status/${jobId}`, {
-                headers: { "Authorization": `Bearer ${localStorage.getItem("token")}` }
-            });
-            const data = await res.json();
-
-            const created = data.created || 0;
-            const failed = data.failed || 0;
-            const pct = Math.round((created + failed) / total * 100);
-
-            document.getElementById("batch-progress-text").textContent = `${created} / ${total} (실패: ${failed})`;
-            document.getElementById("batch-progress-pct").textContent = `${pct}%`;
-            document.getElementById("batch-progress-bar").style.width = `${pct}%`;
-
-            if (data.errors && data.errors.length > 0) {
-                document.getElementById("batch-error-log").textContent = data.errors.slice(-3).join("\n");
-            }
-
-            // 새로 생성된 이브 카드 렌더링
-            renderBatchResults(data.eves || []);
-
-            if (data.done) {
-                clearInterval(batchPollingTimer);
-                batchPollingTimer = null;
-
-                const btn = document.getElementById("batch-start-btn");
-                btn.disabled = false;
-                btn.textContent = "🚀 배치 생성 시작";
-
-                document.getElementById("batch-progress-pct").textContent = "✅ 완료!";
-                document.getElementById("batch-progress-bar").style.width = "100%";
-                document.getElementById("batch-progress-bar").style.background = "#34c759";
-            }
-        } catch (e) {
-            console.error("Polling error:", e);
-        }
-    }, 2000);
-}
-
-function renderBatchResults(eves) {
-    const container = document.getElementById("batch-result-list");
-    container.innerHTML = eves.map(e => `
-        <div style="display:flex; align-items:center; gap:10px; padding:8px; border-bottom:1px solid var(--bg-secondary);">
-            <img src="${e.profile_image_url || '/static/default_avatar.png'}" 
-                 style="width:36px; height:36px; border-radius:50%; object-fit:cover;">
-            <div style="flex:1;">
-                <div style="font-size:12px; font-weight:700;">${e.name}</div>
-                <div style="font-size:10px; color:var(--text-sub);">${e.age}세 ${e.gender} · ${e.mbti}</div>
-            </div>
-            <div style="font-size:9px; color:var(--text-sub);">
-                ${(e.feed_times || []).join(', ')}
-            </div>
-        </div>
-    `).join("");
-}
-
-// 초기 실행
+// 초기 실행 + 피드 2분 자동 갱신
 checkAuth();
+setInterval(() => {
+    if (currentView === "feed") loadFeed(true);
+}, 120000);
