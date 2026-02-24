@@ -3,22 +3,30 @@ import json
 import asyncio
 import random
 import re
+import time
+import base64
+import binascii
+import urllib.request
+import logging
 from datetime import datetime, timezone, timedelta
 from typing import List, Optional, Dict, Any
 from pydantic import BaseModel
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Body, Depends, HTTPException, status, Request, Response
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Body, Depends, HTTPException, status, Request, Response, Query
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, FileResponse
 from fastapi.security import OAuth2PasswordBearer
+from sqlalchemy import inspect, text
 from sqlalchemy.orm import Session
 from starlette.websockets import WebSocketState
 import fal_client
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # 모듈화된 파일들에서 기능 임포트
 from database import engine, SessionLocal, Base
-from models import Persona, ChatRoom, User, PromptTemplate, SystemNotice, FeedPost, FeedComment, MapLocation
+from models import Persona, ChatRoom, User, PromptTemplate, SystemNotice, FeedPost, FeedComment, MapLocation, EveRelationship
 from memory import KST, volatile_memory, get_volatile_state, get_date_info, update_shared_memory, tick_info_slots, DIA_CATEGORIES
-from engine import build_ethnicity_prompt, build_face_base_prompt
 from engine import run_medium_thinking, run_short_thinking, run_utterance, generate_eve_visuals, generate_eve_nickname, client, MODEL_ID, debug_log_buffer, sync_eve_life
 from auth_utils import verify_password, get_password_hash, create_access_token, decode_access_token, update_user_tokens
 from scheduler import AEScheduler
@@ -44,6 +52,29 @@ app = FastAPI()
 COST_PER_1M_TOKENS = 0.15  # Gemini 3.0(Flash) 인풋/아웃풋 통합 평균가 ($0.15 / 1M tokens)
 COST_PER_IMAGE = 0.02  # fal.ai (Grok Imagine 등) 이미지 생성 단가 ($0.02 / image)
 
+
+MAX_LOGIN_FAILS = int(os.environ.get("MAX_LOGIN_FAILS", "5"))
+LOGIN_FAIL_WINDOW_SEC = int(os.environ.get("LOGIN_FAIL_WINDOW_SEC", "300"))
+LOGIN_LOCK_SEC = int(os.environ.get("LOGIN_LOCK_SEC", "900"))
+_login_failures: Dict[str, List[float]] = {}
+_login_locks: Dict[str, float] = {}
+
+admin_audit_logger = logging.getLogger("admin_audit")
+if not admin_audit_logger.handlers:
+    admin_audit_logger.setLevel(logging.INFO)
+    fh = logging.FileHandler("admin_audit.log", encoding="utf-8")
+    fh.setFormatter(logging.Formatter("%(asctime)s\t%(levelname)s\t%(message)s"))
+    admin_audit_logger.addHandler(fh)
+
+
+def _to_kst(dt: Optional[datetime]) -> Optional[datetime]:
+    if not dt:
+        return None
+    # DB timestamps are stored as naive UTC; normalize to aware KST for display.
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(KST)
+
 # 보안 설정: JWT 토큰 추출을 위한 스킴
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login", auto_error=False)
 
@@ -56,6 +87,31 @@ async def add_no_cache_header(request: Request, call_next):
     response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate, max-age=0"
     response.headers["Pragma"] = "no-cache"
     response.headers["Expires"] = "0"
+    path = request.url.path or ""
+    if path.startswith("/admin"):
+        token = _extract_bearer_token(request)
+        actor = "anonymous"
+        is_admin_actor = False
+        if token:
+            payload = decode_access_token(token)
+            if payload:
+                actor = payload.get("sub", "unknown")
+                if actor and actor != "unknown":
+                    db = SessionLocal()
+                    try:
+                        u = db.query(User).filter(User.username == actor).first()
+                        is_admin_actor = bool(u and u.is_admin)
+                    finally:
+                        db.close()
+        admin_audit_logger.info(
+            "path=%s method=%s actor=%s actor_admin=%s status=%s ip=%s",
+            path,
+            request.method,
+            actor,
+            is_admin_actor,
+            response.status_code,
+            _client_ip(request),
+        )
     return response
 
 
@@ -66,6 +122,115 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 
 # DB 테이블 생성
 Base.metadata.create_all(bind=engine)
+
+
+def _ensure_feed_post_tag_columns():
+    try:
+        inspector = inspect(engine)
+        if "feed_posts" not in inspector.get_table_names():
+            return
+        existing = {c["name"] for c in inspector.get_columns("feed_posts")}
+        with engine.begin() as conn:
+            if "tagged_persona_ids" not in existing:
+                conn.execute(text("ALTER TABLE feed_posts ADD COLUMN tagged_persona_ids JSON"))
+            if "tag_activity" not in existing:
+                conn.execute(text("ALTER TABLE feed_posts ADD COLUMN tag_activity VARCHAR"))
+    except Exception as e:
+        print(f"Schema patch failed for feed-post tags: {e}")
+
+
+_ensure_feed_post_tag_columns()
+
+MAX_PROFILE_PHOTOS = 3
+
+
+def _normalize_profile_images(raw_images: Any) -> List[Dict[str, Any]]:
+    if not isinstance(raw_images, list):
+        return []
+    normalized: List[Dict[str, Any]] = []
+    for item in raw_images:
+        if isinstance(item, str):
+            url = item.strip()
+            if not url:
+                continue
+            normalized.append({"url": url})
+            continue
+        if isinstance(item, dict):
+            url = str(item.get("url") or "").strip()
+            if not url:
+                continue
+            normalized.append({
+                "url": url,
+                "prompt": str(item.get("prompt") or "").strip(),
+                "shot_type": str(item.get("shot_type") or "").strip(),
+                "model": str(item.get("model") or "").strip(),
+                "created_at": str(item.get("created_at") or "").strip(),
+            })
+    dedup: List[Dict[str, Any]] = []
+    seen = set()
+    for item in normalized:
+        url = item.get("url")
+        if not url or url in seen:
+            continue
+        seen.add(url)
+        dedup.append(item)
+    return dedup[:MAX_PROFILE_PHOTOS]
+
+
+def _build_persona_gallery(persona: Persona) -> List[Dict[str, Any]]:
+    gallery = _normalize_profile_images(getattr(persona, "profile_images", []))
+    primary = str(getattr(persona, "profile_image_url", "") or "").strip()
+    if primary:
+        if not any(str(item.get("url") or "").strip() == primary for item in gallery):
+            gallery.insert(0, {
+                "url": primary,
+                "prompt": str(getattr(persona, "image_prompt", "") or "").strip(),
+                "shot_type": "primary",
+                "model": "",
+                "created_at": ""
+            })
+    return gallery[:MAX_PROFILE_PHOTOS]
+
+
+def _build_user_gallery(user: User) -> List[Dict[str, Any]]:
+    gallery = _normalize_profile_images(getattr(user, "profile_images", []))
+    primary = str(getattr(user, "profile_image_url", "") or "").strip()
+    if primary:
+        if not any(str(item.get("url") or "").strip() == primary for item in gallery):
+            gallery.insert(0, {"url": primary, "created_at": ""})
+    return gallery[:MAX_PROFILE_PHOTOS]
+
+
+def _save_persona_gallery(persona: Persona, gallery: List[Dict[str, Any]]):
+    clean = _normalize_profile_images(gallery)
+    persona.profile_images = clean
+    persona.profile_image_url = clean[0]["url"] if clean else None
+
+
+def _save_user_gallery(user: User, gallery: List[Dict[str, Any]]):
+    clean = _normalize_profile_images(gallery)
+    user.profile_images = clean
+    user.profile_image_url = clean[0]["url"] if clean else None
+
+
+def _ensure_profile_gallery_columns():
+    try:
+        inspector = inspect(engine)
+        table_names = set(inspector.get_table_names())
+        with engine.begin() as conn:
+            if "users" in table_names:
+                user_cols = {c["name"] for c in inspector.get_columns("users")}
+                if "profile_images" not in user_cols:
+                    conn.execute(text("ALTER TABLE users ADD COLUMN profile_images JSON"))
+            if "personas" in table_names:
+                persona_cols = {c["name"] for c in inspector.get_columns("personas")}
+                if "profile_images" not in persona_cols:
+                    conn.execute(text("ALTER TABLE personas ADD COLUMN profile_images JSON"))
+    except Exception as e:
+        print(f"Schema patch failed for profile galleries: {e}")
+
+
+_ensure_profile_gallery_columns()
 
 # ---------------------------------------------------------
 # 0. 인증 및 유저 관리 유틸리티
@@ -93,6 +258,46 @@ async def get_current_user(token: str = Depends(oauth2_scheme),
         return None
     user = db.query(User).filter(User.username == username).first()
     return user
+
+
+def _client_ip(request: Request) -> str:
+    xff = request.headers.get("x-forwarded-for")
+    if xff:
+        return xff.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
+
+
+def _extract_bearer_token(request: Request) -> Optional[str]:
+    auth = request.headers.get("authorization", "")
+    if not auth.lower().startswith("bearer "):
+        return None
+    return auth.split(" ", 1)[1].strip()
+
+
+def _is_login_locked(key: str) -> int:
+    now = time.time()
+    unlock_ts = _login_locks.get(key)
+    if not unlock_ts:
+        return 0
+    if now >= unlock_ts:
+        _login_locks.pop(key, None)
+        return 0
+    return int(unlock_ts - now)
+
+
+def _record_login_failure(key: str):
+    now = time.time()
+    failures = [ts for ts in _login_failures.get(key, []) if now - ts <= LOGIN_FAIL_WINDOW_SEC]
+    failures.append(now)
+    _login_failures[key] = failures
+    if len(failures) >= MAX_LOGIN_FAILS:
+        _login_locks[key] = now + LOGIN_LOCK_SEC
+        _login_failures.pop(key, None)
+
+
+def _clear_login_failures(key: str):
+    _login_failures.pop(key, None)
+    _login_locks.pop(key, None)
 
 
 def update_user_tokens(db: Session, user_id: int, token_count: int):
@@ -157,8 +362,10 @@ async def startup_initialization():
     admin_user = db.query(User).filter(User.is_admin == True).first()
     if not admin_user:
         print(">> STARTUP: Creating Admin User...")
-        name = os.environ.get("ADMIN_ID", "admin")
-        pw = os.environ.get("ADMIN_PW", "31313142")
+        name = os.environ.get("ADMIN_ID")
+        pw = os.environ.get("ADMIN_PW")
+        if not name or not pw:
+            raise RuntimeError("No admin exists and ADMIN_ID/ADMIN_PW are not configured.")
         new_admin = User(username=name,
                          hashed_password=get_password_hash(pw),
                          is_admin=True)
@@ -174,6 +381,7 @@ async def startup_initialization():
 
     # [v1.4.2] PromptTemplate 테이블은 비워두어 engine.py의 core_prompt가 우선 적용되게 함.
     seed_world_map(db) # [v2.0.0] 맵 데이터 시딩
+    _sync_admin_rooms_for_all_personas(db)
     print(">> STARTUP: Closing DB session...")
     db.close()
     print(">> STARTUP: Initialization Complete.")
@@ -185,122 +393,274 @@ async def startup_initialization():
 
 # [v2.0.0] 피드 API
 @app.get("/api/feed")
-async def get_feed(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    if not current_user: raise HTTPException(status_code=401)
+async def get_feed(
+    current_user: Optional[User] = Depends(get_current_user),
+    db: Session = Depends(get_db),
+    offset: int = Query(0, ge=0),
+    limit: int = Query(20, ge=1, le=50),
+):
+    base_q = db.query(FeedPost).filter(FeedPost.is_published == True)
+    total = base_q.count()
+    posts = base_q.order_by(FeedPost.id.desc()).offset(offset).limit(limit).all()
     
-    # 최신글 50개 조회
-    posts = db.query(FeedPost).order_by(FeedPost.created_at.desc()).limit(50).all()
-    
+    user_room_map: Dict[int, int] = {}
+    if current_user:
+        user_rooms = db.query(ChatRoom).filter(ChatRoom.owner_id == current_user.id).all()
+        user_room_map = {r.persona_id: r.id for r in user_rooms if r.persona_id}
+
+    tagged_id_pool = set()
+    for post in posts:
+        raw_tags = post.tagged_persona_ids if isinstance(post.tagged_persona_ids, list) else []
+        for raw_tid in raw_tags:
+            try:
+                tagged_id_pool.add(int(raw_tid))
+            except Exception:
+                continue
+
+    tagged_persona_map: Dict[int, Persona] = {}
+    if tagged_id_pool:
+        tagged_persona_map = {
+            p.id: p for p in db.query(Persona).filter(Persona.id.in_(list(tagged_id_pool))).all()
+        }
+
     feed_data = []
     for post in posts:
-        # 작성자(이브) 정보
-        author = post.persona
-        
-        # 현재 유저와의 채팅방 ID 찾기 (DM 이동용)
-        room = db.query(ChatRoom).filter(
-            ChatRoom.owner_id == current_user.id, 
-            ChatRoom.persona_id == author.id
-        ).first()
-        my_room_id = room.id if room else None
+        # 작성자 정보 (이브 또는 유저)
+        author_type = "persona" if post.persona else "user"
+        author_name = "Unknown"
+        author_image = None
+        author_id = None
+        my_room_id = None
+
+        if post.persona:
+            author = post.persona
+            author_name = author.name
+            author_image = author.profile_image_url
+            author_id = author.id
+            # [Phase 5] 게스트 모드 대응
+            if current_user:
+                my_room_id = user_room_map.get(author.id)
+        elif post.user:
+            u = post.user
+            author_name = u.display_name or u.username
+            author_image = u.profile_image_url
+            author_id = u.id
 
         # 댓글 목록
         comments = []
         for c in post.comments:
             c_author_name = "Unknown"
             c_author_img = None
+            c_can_delete = False
+            c_author_type = "unknown"
+            c_author_id = None
+            c_room_id = None
             if c.persona:
                 c_author_name = c.persona.name
                 c_author_img = c.persona.profile_image_url
+                c_author_type = "persona"
+                c_author_id = c.persona.id
+                if current_user:
+                    c_room_id = user_room_map.get(c.persona.id)
             elif c.user:
                 c_author_name = c.user.display_name or c.user.username
                 c_author_img = c.user.profile_image_url
-                
+                c_author_type = "user"
+                c_author_id = c.user.id
+            if current_user and (current_user.is_admin or (c.user_id and c.user_id == current_user.id)):
+                c_can_delete = True
+                 
             comments.append({
                 "id": c.id,
                 "content": c.content,
+                "author_type": c_author_type,
+                "author_id": c_author_id,
+                "room_id": c_room_id,
                 "author_name": c_author_name,
                 "author_image": c_author_img,
-                "created_at": c.created_at.strftime("%Y-%m-%d %H:%M")
+                "created_at": (_to_kst(c.created_at) or c.created_at).strftime("%Y-%m-%d %H:%M"),
+                "can_delete": c_can_delete
             })
 
-        # 날짜 포맷 (MM.DD (요일))
+        # 날짜 포맷 (MM.DD (요일) HH:MM)
         days = ["월", "화", "수", "목", "금", "토", "일"]
-        dt = post.created_at
+        # Display based on actual creation time to avoid legacy scheduled_at timezone drift.
+        dt = _to_kst(post.created_at) or post.created_at
         day_str = days[dt.weekday()]
-        date_str = f"{dt.month:02d}.{dt.day:02d} ({day_str})"
+        time_str = dt.strftime("%H:%M")
+        date_str = f"{dt.month:02d}.{dt.day:02d} ({day_str}) {time_str}"
+        
+        has_liked = current_user.id in (post.liked_by_users or []) if current_user else False
+        post_can_delete = False
+        if current_user and (current_user.is_admin or (post.user_id and post.user_id == current_user.id)):
+            post_can_delete = True
+
+        tagged_personas_payload = []
+        seen_tag_ids = set()
+        raw_tag_ids = post.tagged_persona_ids if isinstance(post.tagged_persona_ids, list) else []
+        for raw_tid in raw_tag_ids:
+            try:
+                tid = int(raw_tid)
+            except Exception:
+                continue
+            if tid in seen_tag_ids:
+                continue
+            seen_tag_ids.add(tid)
+            tagged = tagged_persona_map.get(tid)
+            if not tagged:
+                continue
+            tagged_personas_payload.append({
+                "persona_id": tagged.id,
+                "name": tagged.name,
+                "image_url": tagged.profile_image_url,
+                "room_id": user_room_map.get(tagged.id) if current_user else None
+            })
 
         feed_data.append({
             "id": post.id,
-            "author_name": author.name,
-            "author_image": author.profile_image_url,
-            "author_id": author.id,
+            "author_type": author_type,
+            "author_name": author_name,
+            "author_image": author_image,
+            "author_id": author_id,
             "room_id": my_room_id, # 클릭 시 이동할 채팅방 ID
             "content": post.content,
+            "tagged_personas": tagged_personas_payload,
+            "tag_activity": post.tag_activity,
             "image_url": post.image_url,
+            "image_prompt": post.image_prompt,  # 관리자를 위한 프롬프트 데이터
             "like_count": post.like_count,
-            "created_at": date_str, # MM.DD (요일)
+            "has_liked": has_liked,
+            "can_delete": post_can_delete,
+            "created_at": date_str, # MM.DD (요일) HH:MM
             "comments": comments
         })
         
-    return feed_data
+    next_offset = offset + len(feed_data)
+    return {
+        "items": feed_data,
+        "has_more": next_offset < total,
+        "next_offset": next_offset,
+        "total": total
+    }
 
-@app.post("/api/feed/seed")
-async def seed_feed(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    """테스트용 샘플 피드 생성"""
+
+@app.post("/api/feed/post")
+async def create_user_feed_post(data: dict = Body(...), current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    if not current_user:
+        raise HTTPException(status_code=401, detail="로그인이 필요합니다.")
+
+    content = str(data.get("content") or "").strip()
+    image_url = str(data.get("image_url") or "").strip() or None
+
+    if not content:
+        raise HTTPException(status_code=400, detail="내용을 입력해주세요.")
+    if len(content) > 1000:
+        raise HTTPException(status_code=400, detail="내용은 1000자 이하여야 합니다.")
+
+    post = FeedPost(
+        user_id=current_user.id,
+        content=content,
+        image_url=image_url,
+        is_published=True
+    )
+    db.add(post)
+    db.commit()
+    db.refresh(post)
+
+    return {"status": "success", "post_id": post.id}
+
+
+@app.post("/api/feed/{post_id}/comment")
+async def add_feed_comment(post_id: int, data: dict = Body(...), current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     if not current_user: raise HTTPException(status_code=401)
     
-    # 기존 이브 중 랜덤 선택
-    personas = db.query(Persona).all()
-    if not personas: return {"status": "no_personas"}
-    
-    sample_texts = [
-        "오늘 날씨가 너무 좋아서 산책 나왔어! 🌿 다들 점심은 뭐 먹었어?",
-        "새로 산 책을 읽고 있는데 너무 재밌네. 추천해줄 사람? 📚",
-        "우울할 땐 역시 달달한 게 최고지. 초콜릿 케이크 먹는 중! 🍰",
-        "주말에 뭐할지 고민이다... 영화 볼까?",
-        "오늘따라 기분이 묘해. 꿈자리가 뒤숭숭했나 봐."
-    ]
-    
-    # 3개 생성
-    for _ in range(3):
-        p = random.choice(personas)
-        post = FeedPost(
-            persona_id=p.id,
-            content=random.choice(sample_texts),
-            image_url="https://placehold.co/600x400/222/888?text=Snapshot", # Placeholder
-            like_count=random.randint(5, 100),
-            created_at=datetime.now(KST) - timedelta(minutes=random.randint(10, 300))
-        )
-        db.add(post)
-        db.commit()
+    content = data.get("content")
+    if not content or not content.strip():
+        raise HTTPException(status_code=400, detail="Content is required")
         
-        # 댓글 생성 (2~4개)
-        num_comments = random.randint(2, 4)
-        for _ in range(num_comments):
-            other_p = random.choice(personas)
-            # 본인이 쓴 댓글도 가능
-            
-            comment_texts = [
-                "완전 공감해! ㅋㅋ",
-                "오 진짜? 나도 가보고 싶다.",
-                "사진 분위기 너무 좋은데?",
-                "요즘 너무 바빠서 얼굴 보기도 힘들네 ㅠㅠ",
-                "다음에 같이 가자!",
-                "이거 어디서 산 거야? 정보 좀 ㅎㅎ",
-                "ㅋㅋㅋㅋㅋ 웃겨",
-                "힘내! 🔥"
-            ]
+    post = db.query(FeedPost).filter(FeedPost.id == post_id).first()
+    if not post:
+        raise HTTPException(status_code=404, detail="Post not found")
+        
+    comment = FeedComment(
+        post_id=post.id,
+        user_id=current_user.id,
+        content=content.strip(),
+        # Store UTC-naive consistently; convert to KST only at response/render time.
+        created_at=datetime.utcnow()
+    )
+    db.add(comment)
+    db.commit()
+    db.refresh(comment)
+    
+    # [Phase 4] 트리거: 유저 댓글 이벤트 기록 후 백그라운드에서 DM 반응 전송
+    import engine
+    import asyncio
+    asyncio.create_task(engine.handle_user_comment_reaction(post.id, comment.id, current_user.id))
+    
+    return {"status": "success", "comment_id": comment.id}
 
-            comment = FeedComment(
-                post_id=post.id,
-                persona_id=other_p.id,
-                content=random.choice(comment_texts),
-                created_at=datetime.now(KST) - timedelta(minutes=random.randint(1, 60))
-            )
-            db.add(comment)
-            db.commit()
-            
-    return {"status": "seeded"}
+
+@app.delete("/api/feed/{post_id}")
+async def delete_feed_post(post_id: int, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    if not current_user:
+        raise HTTPException(status_code=401, detail="로그인이 필요합니다.")
+
+    post = db.query(FeedPost).filter(FeedPost.id == post_id).first()
+    if not post:
+        raise HTTPException(status_code=404, detail="Post not found")
+
+    if not current_user.is_admin:
+        if not post.user_id or post.user_id != current_user.id:
+            raise HTTPException(status_code=403, detail="삭제 권한이 없습니다.")
+
+    db.delete(post)
+    db.commit()
+    return {"status": "deleted"}
+
+
+@app.delete("/api/feed/comment/{comment_id}")
+async def delete_feed_comment(comment_id: int, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    if not current_user:
+        raise HTTPException(status_code=401, detail="로그인이 필요합니다.")
+
+    comment = db.query(FeedComment).filter(FeedComment.id == comment_id).first()
+    if not comment:
+        raise HTTPException(status_code=404, detail="Comment not found")
+
+    if not current_user.is_admin:
+        if not comment.user_id or comment.user_id != current_user.id:
+            raise HTTPException(status_code=403, detail="삭제 권한이 없습니다.")
+
+    db.delete(comment)
+    db.commit()
+    return {"status": "deleted"}
+
+
+@app.post("/api/feed/{post_id}/like")
+async def toggle_feed_like(post_id: int, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    if not current_user: raise HTTPException(status_code=401)
+    
+    post = db.query(FeedPost).filter(FeedPost.id == post_id).first()
+    if not post:
+        raise HTTPException(status_code=404, detail="Post not found")
+        
+    liked_by = list(post.liked_by_users or [])
+    if current_user.id in liked_by:
+        liked_by.remove(current_user.id)
+        post.like_count = max(0, post.like_count - 1)
+        has_liked = False
+    else:
+        liked_by.append(current_user.id)
+        post.like_count += 1
+        has_liked = True
+        
+    from sqlalchemy.orm.attributes import flag_modified
+    post.liked_by_users = liked_by
+    flag_modified(post, "liked_by_users")
+    db.commit()
+    
+    return {"status": "success", "like_count": post.like_count, "has_liked": has_liked}
 
 
 @app.post("/register")
@@ -319,43 +679,25 @@ async def register(data: dict = Body(...), db: Session = Depends(get_db)):
     db.commit()
     db.refresh(new_user)
 
-    # [v2.0.0] Shared Universe: 새로 가입한 유저에게 기존의 모든 이브(Persona)를 친구로 추가
-    existing_personas = db.query(Persona).all()
-    for p in existing_personas:
-        # 이미 채팅방이 있는지 확인 (중복 방지)
-        exists = db.query(ChatRoom).filter(ChatRoom.owner_id == new_user.id, ChatRoom.persona_id == p.id).first()
-        if not exists:
-            new_room = ChatRoom(
-                owner_id=new_user.id,
-                persona_id=p.id,
-                v_likeability=random.randint(20, 100),
-                v_erotic=random.randint(10, 40),
-                v_v_mood=random.randint(20, 100),
-                v_relationship=random.randint(20, 100)
-            )
-            db.add(new_room)
-        
-        # [v3.0.0] 이브의 user_registry에 새 유저 추가
-        registry = list(p.user_registry or [])
-        if not any(e.get('user_id') == new_user.id for e in registry):
-            registry.append({
-                "user_id": new_user.id,
-                "display_name": new_user.display_name or new_user.username,
-                "relationship": "낯선 사람",
-                "last_talked": None,
-                "memo": ""
-            })
-            p.user_registry = registry
+    # [Phase 5] 새 가입 유저 빈 친구목록 설계 (자동 친구 추가 기능 제거)
     
     db.commit()
     return {"status": "success"}
 
 
 @app.post("/login")
-async def login(data: dict = Body(...), db: Session = Depends(get_db)):
-    user = db.query(User).filter(User.username == data['username']).first()
+async def login(request: Request, data: dict = Body(...), db: Session = Depends(get_db)):
+    username = str(data.get('username', '')).strip()
+    key = f"{_client_ip(request)}:{username}"
+    remain = _is_login_locked(key)
+    if remain > 0:
+        raise HTTPException(status_code=429, detail=f"Too many login attempts. Try again in {remain}s")
+
+    user = db.query(User).filter(User.username == username).first()
     if not user or not verify_password(data['password'], user.hashed_password):
+        _record_login_failure(key)
         raise HTTPException(status_code=401, detail="아이디 또는 비밀번호가 틀렸습니다.")
+    _clear_login_failures(key)
 
     access_token = create_access_token(data={"sub": user.username})
     return {
@@ -368,8 +710,29 @@ async def login(data: dict = Body(...), db: Session = Depends(get_db)):
 
 
 # ---------------------------------------------------------
-# 1.5 사용자 프로필 및 설정 API (v1.5.0)
+# 1.5 사용자 프로필 및 일반 API (v1.5.0)
 # ---------------------------------------------------------
+
+# [Phase 5] 모달 미니 프로필용 퍼소나 정보 조회
+@app.get("/api/public/persona/{persona_id}")
+async def get_public_persona(persona_id: int, db: Session = Depends(get_db)):
+    p = db.query(Persona).filter(Persona.id == persona_id).first()
+    if not p:
+        raise HTTPException(status_code=404, detail="이브를 찾을 수 없습니다.")
+    
+    details = p.profile_details or {}
+    intro_text = str(details.get("hook") or details.get("intro") or "").strip()
+    return {
+        "id": p.id,
+        "name": p.name,
+        "profile_image_url": p.profile_image_url,
+        "profile_images": _build_persona_gallery(p),
+        "intro": intro_text,
+        "age": p.age,
+        "gender": p.gender,
+        "mbti": p.mbti,
+        "profile_details": details
+    }
 
 
 @app.get("/api/user/profile")
@@ -385,6 +748,7 @@ async def get_my_profile(current_user: User = Depends(get_current_user)):
         "gender": current_user.gender,
         "mbti": current_user.mbti,
         "profile_image_url": current_user.profile_image_url,
+        "profile_images": _build_user_gallery(current_user),
         "profile_details": current_user.profile_details or {}
     }
 
@@ -416,9 +780,45 @@ async def update_profile_image(data: ImageUpdate,
                                db: Session = Depends(get_db)):
     if not current_user: raise HTTPException(status_code=401)
     user = db.query(User).filter(User.id == current_user.id).first()
-    user.profile_image_url = data.image_url
+    image_url = str(data.image_url or "").strip()
+    if not image_url:
+        raise HTTPException(status_code=400, detail="image_url is required")
+    gallery = _build_user_gallery(user)
+    gallery = [item for item in gallery if str(item.get("url") or "").strip() != image_url]
+    gallery.insert(0, {"url": image_url, "created_at": datetime.now(KST).strftime("%Y-%m-%d %H:%M")})
+    _save_user_gallery(user, gallery[:MAX_PROFILE_PHOTOS])
     db.commit()
     return {"status": "success"}
+
+
+@app.post("/api/user/profile/images")
+async def update_profile_images(data: dict = Body(...),
+                                current_user: User = Depends(get_current_user),
+                                db: Session = Depends(get_db)):
+    if not current_user:
+        raise HTTPException(status_code=401, detail="로그인이 필요합니다.")
+    urls = data.get("image_urls")
+    if not isinstance(urls, list):
+        raise HTTPException(status_code=400, detail="image_urls must be a list")
+
+    clean: List[Dict[str, Any]] = []
+    seen = set()
+    for raw in urls:
+        url = str(raw or "").strip()
+        if not url or url in seen:
+            continue
+        seen.add(url)
+        clean.append({"url": url, "created_at": datetime.now(KST).strftime("%Y-%m-%d %H:%M")})
+        if len(clean) >= MAX_PROFILE_PHOTOS:
+            break
+
+    if not clean:
+        raise HTTPException(status_code=400, detail="at least one valid image url is required")
+
+    user = db.query(User).filter(User.id == current_user.id).first()
+    _save_user_gallery(user, clean)
+    db.commit()
+    return {"status": "success", "profile_image_url": user.profile_image_url, "profile_images": _build_user_gallery(user)}
 
 
 @app.get("/api/user/settings")
@@ -446,6 +846,80 @@ async def update_user_settings(settings: SettingsUpdate,
     db.commit()
     return {"status": "success"}
 
+# [Phase 5] 추천 친구 (Suggested Eves) API
+@app.get("/api/public/personas/suggested")
+async def get_suggested_personas(limit: int = 5, current_user: Optional[User] = Depends(get_current_user), db: Session = Depends(get_db)):
+    # 모든 이브를 가져옵니다 (is_active 컬럼이 없어 전체 대상)
+    query = db.query(Persona)
+    
+    # 로그인한 유저라면 이미 친구인 이브는 제외합니다
+    if current_user:
+        existing_friend_ids = [
+            r.persona_id for r in db.query(ChatRoom).filter(ChatRoom.owner_id == current_user.id).all()
+        ]
+        if existing_friend_ids:
+            query = query.filter(Persona.id.notin_(existing_friend_ids))
+            
+    personas = query.all()
+    # 랜덤하게 섞어서 반환
+    if len(personas) > limit:
+        personas = random.sample(personas, limit)
+        
+    result = []
+    for p in personas:
+        details = p.profile_details or {}
+        intro_text = str(details.get("hook") or details.get("intro") or "").strip()
+        result.append({
+            "id": p.id,
+            "name": p.name,
+            "profile_image_url": p.profile_image_url,
+            "intro": intro_text or "새로운 이브를 만나보세요!"
+        })
+    return result
+
+# [Phase 5] 수동 친구 추가 API
+@app.post("/api/friends/{persona_id}/add")
+async def add_friend(persona_id: int, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    if not current_user:
+        raise HTTPException(status_code=401, detail="로그인이 필요합니다.")
+        
+    p = db.query(Persona).filter(Persona.id == persona_id).first()
+    if not p:
+        raise HTTPException(status_code=404, detail="해당 이브를 찾을 수 없습니다.")
+        
+    # 중복 체크
+    exists = db.query(ChatRoom).filter(ChatRoom.owner_id == current_user.id, ChatRoom.persona_id == p.id).first()
+    if exists:
+        return {"status": "success", "room_id": exists.id, "message": "이미 친구입니다."}
+        
+    # 채팅방 생성 (친구 맺기)
+    new_room = ChatRoom(
+        owner_id=current_user.id,
+        persona_id=p.id,
+        v_likeability=random.randint(20, 100),
+        v_erotic=random.randint(10, 40),
+        v_v_mood=random.randint(20, 100),
+        v_relationship=random.randint(20, 100)
+    )
+    db.add(new_room)
+    
+    # 이브의 user_registry 업데이트
+    registry = list(p.user_registry or [])
+    if not any(e.get('user_id') == current_user.id for e in registry):
+        registry.append({
+            "user_id": current_user.id,
+            "display_name": current_user.display_name or current_user.username,
+            "relationship": "낯선 사람",
+            "last_talked": None,
+            "memo": ""
+        })
+        p.user_registry = registry
+        
+    db.commit()
+    db.refresh(new_room)
+    
+    return {"status": "success", "room_id": new_room.id}
+
 
 
 
@@ -458,10 +932,16 @@ async def upload_profile_image(data: dict = Body(...),
     if not current_user:
         raise HTTPException(status_code=401, detail="로그인이 필요합니다.")
     
+    image_url = str(data.get('image_url') or "").strip()
+    if not image_url:
+        raise HTTPException(status_code=400, detail="image_url is required")
     user = db.query(User).filter(User.id == current_user.id).first()
-    user.profile_image_url = data.get('image_url')
+    gallery = _build_user_gallery(user)
+    gallery = [item for item in gallery if str(item.get("url") or "").strip() != image_url]
+    gallery.insert(0, {"url": image_url, "created_at": datetime.now(KST).strftime("%Y-%m-%d %H:%M")})
+    _save_user_gallery(user, gallery[:MAX_PROFILE_PHOTOS])
     db.commit()
-    return {"status": "success", "image_url": user.profile_image_url}
+    return {"status": "success", "image_url": user.profile_image_url, "profile_images": _build_user_gallery(user)}
 
 
 @app.get("/api/user/onboarding-status")
@@ -557,14 +1037,90 @@ async def admin_get_all_eves(current_user: User = Depends(get_current_user), db:
                 "is_active": r.id in volatile_memory
             })
             
+        details = p.profile_details or {}
         eve_list.append({
             "persona_id": p.id,
             "persona_name": p.name,
             "persona_image": p.profile_image_url,
+            "profile_images": _build_persona_gallery(p),
+            "image_prompt": p.image_prompt,
+            "mbti": p.mbti,
+            "hook": details.get("hook", ""),
+            "intro": details.get("intro", ""),
+            "job": details.get("job", ""),
+            "goal": details.get("goal", ""),
+            "lifestyle": details.get("lifestyle", ""),
+            "tmi": details.get("tmi", ""),
+            "interests": details.get("interests", []),
             "rooms": room_data
         })
         
     return eve_list
+
+
+# [v3.4.0] 관리자 전용 이브 상세 대시보드 데이터 조회
+@app.get("/admin/persona/{persona_id}/details")
+async def admin_get_persona_details(persona_id: int, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    if not current_user or not current_user.is_admin:
+        raise HTTPException(status_code=403, detail="권한이 없습니다.")
+
+    p = db.query(Persona).filter(Persona.id == persona_id).first()
+    if not p:
+        raise HTTPException(status_code=404, detail="이브를 찾을 수 없습니다.")
+
+    # 1. 최근 피드 활동 (최대 10개)
+    posts = db.query(FeedPost).filter(FeedPost.persona_id == p.id).order_by(FeedPost.created_at.desc()).limit(10).all()
+    feed_data = [{
+        "id": f.id,
+        "content": f.content,
+        "image_url": f.image_url,
+        "created_at": (_to_kst(f.created_at) or f.created_at).strftime("%Y-%m-%d %H:%M")
+    } for f in posts]
+
+    # 2. 이브-이브 친구 목록 및 관계
+    rels = db.query(EveRelationship).filter((EveRelationship.persona_a_id == p.id) | (EveRelationship.persona_b_id == p.id)).all()
+    eve_friends = []
+    conversations = []
+    
+    for rel in rels:
+        other_id = rel.persona_b_id if rel.persona_a_id == p.id else rel.persona_a_id
+        other_p = db.query(Persona).filter(Persona.id == other_id).first()
+        if other_p:
+            eve_friends.append({
+                "type": "EVE",
+                "name": other_p.name,
+                "relationship": rel.relationship_type,
+                "interactions": rel.interaction_count
+            })
+            if rel.conversation_summaries:
+                conversations.extend([{"with": other_p.name, "summary": s} for s in rel.conversation_summaries])
+
+    # 3. 유저 친구 목록 (ChatRoom을 통해)
+    rooms = db.query(ChatRoom).filter(ChatRoom.persona_id == p.id).all()
+    for r in rooms:
+        owner = db.query(User).filter(User.id == r.owner_id).first()
+        if owner:
+            eve_friends.append({
+                "type": "USER",
+                "name": owner.username,
+                "relationship": "친구",
+                "interactions": "-"
+            })
+
+    # 최신순 정렬 대화
+    conversations.reverse()
+
+    return {
+        "id": p.id,
+        "name": p.name,
+        "profile_images": _build_persona_gallery(p),
+        "face_base_url": p.face_base_url,
+        "face_prompt": p.image_prompt,
+        "shared_memory": p.shared_memory or [],
+        "feed_posts": feed_data,
+        "friends": eve_friends,
+        "conversations": conversations[:20]  # 최근 20개
+    }
 
 
 @app.get("/admin/user/{user_id}/detail")
@@ -615,6 +1171,61 @@ async def admin_delete_user(user_id: int,
     return {"status": "deleted"}
 
 
+@app.delete("/admin/bulk-delete-personas")
+async def admin_bulk_delete_personas(data: dict = Body(...),
+                                     current_user: User = Depends(get_current_user),
+                                     db: Session = Depends(get_db)):
+    if not current_user or not current_user.is_admin:
+        raise HTTPException(status_code=403, detail="권한이 없습니다.")
+
+    persona_ids = data.get("ids", [])
+    if not persona_ids:
+        return {"status": "no_ids"}
+
+    try:
+        # 1. 피드 댓글 삭제 (해당 페르소나가 쓴 댓글 + 해당 페르소나의 게시물에 달린 댓글)
+        # 먼저 페르소나의 게시물 ID들을 가져옴
+        post_ids = [p[0] for p in db.query(FeedPost.id).filter(FeedPost.persona_id.in_(persona_ids)).all()]
+        
+        # 페르소나가 쓴 댓글 삭제
+        db.query(FeedComment).filter(FeedComment.persona_id.in_(persona_ids)).delete(synchronize_session=False)
+        # 페르소나의 게시물에 달린 다른 사람들의 댓글 삭제
+        if post_ids:
+            db.query(FeedComment).filter(FeedComment.post_id.in_(post_ids)).delete(synchronize_session=False)
+
+        # 2. scheduled_actions에서 해당 피드 게시물 참조 행 먼저 삭제 (FK 제약 해소)
+        if post_ids:
+            from sqlalchemy import text
+            placeholders = ",".join(str(i) for i in post_ids)
+            db.execute(text(f"DELETE FROM scheduled_actions WHERE target_post_id IN ({placeholders})"))
+
+        # 3. 피드 게시물 삭제
+        db.query(FeedPost).filter(FeedPost.persona_id.in_(persona_ids)).delete(
+            synchronize_session=False)
+
+        # 3. 채팅방 삭제 (Persona 삭제 전 필수)
+        db.query(ChatRoom).filter(ChatRoom.persona_id.in_(persona_ids)).delete(
+            synchronize_session=False)
+
+        # 4. 이브 간의 관계 삭제
+        db.query(EveRelationship).filter(EveRelationship.persona_a_id.in_(persona_ids)).delete(synchronize_session=False)
+        db.query(EveRelationship).filter(EveRelationship.persona_b_id.in_(persona_ids)).delete(synchronize_session=False)
+
+        # 5. 페르소나 삭제
+        db.query(Persona).filter(Persona.id.in_(persona_ids)).delete(
+            synchronize_session=False)
+
+        db.commit()
+        print(f">> ADMIN: Bulk deleted {len(persona_ids)} personas: {persona_ids}")
+        return {"status": "deleted", "count": len(persona_ids)}
+    except Exception as e:
+        db.rollback()
+        print(f">> ADMIN ERROR: Bulk delete failed: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"삭제 중 서버 오류가 발생했습니다: {str(e)}")
+
+
 @app.get("/admin/room/{room_id}/volatile")
 async def admin_get_volatile(room_id: int, current_user: User = Depends(get_current_user)):
     if not current_user or not current_user.is_admin:
@@ -653,6 +1264,216 @@ async def admin_update_identity(room_id: int, data: dict = Body(...), current_us
             vs['p_dict']['model_id'] = room.model_id
 
     return {"status": "success"}
+
+
+@app.post("/admin/room/{room_id}/profile-image")
+async def admin_generate_profile_image(room_id: int, data: dict = Body(...), current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    if not current_user or not current_user.is_admin:
+        raise HTTPException(status_code=403)
+
+    room = db.query(ChatRoom).filter(ChatRoom.id == room_id).first()
+    if not room or not room.persona:
+        raise HTTPException(status_code=404, detail="Room/persona not found")
+
+    persona = room.persona
+    prompt = str(data.get("prompt") or "").strip()
+    prefer_edit = bool(data.get("prefer_edit", True))
+    if not prompt:
+        raise HTTPException(status_code=400, detail="prompt is required")
+
+    def _extract_image_url(result: Any) -> Optional[str]:
+        if not result or not isinstance(result, dict):
+            return None
+        if isinstance(result.get("images"), list) and result["images"]:
+            first = result["images"][0]
+            if isinstance(first, dict):
+                return first.get("url")
+        data_obj = result.get("data")
+        if isinstance(data_obj, dict) and isinstance(data_obj.get("images"), list) and data_obj["images"]:
+            first = data_obj["images"][0]
+            if isinstance(first, dict):
+                return first.get("url")
+        return None
+
+    image_url = None
+    model_used = None
+    errors = []
+
+    # 1) Prefer edit model with base face when available.
+    if prefer_edit and persona.face_base_url:
+        try:
+            fal_face_url = await asyncio.to_thread(_prepare_fal_image_url, persona.face_base_url)
+            result = await asyncio.wait_for(
+                asyncio.to_thread(
+                    fal_client.subscribe,
+                    "fal-ai/nano-banana/edit",
+                    arguments={
+                        "prompt": prompt,
+                        "image_urls": [fal_face_url],
+                        "num_images": 1,
+                        "aspect_ratio": "1:1"
+                    }
+                ),
+                timeout=35
+            )
+            image_url = _extract_image_url(result)
+            model_used = "fal-ai/nano-banana/edit"
+        except Exception as e:
+            errors.append(f"edit failed: {e}")
+
+    # 2) Fallback to text-to-image if edit path failed or unavailable.
+    if not image_url:
+        try:
+            result = await asyncio.wait_for(
+                asyncio.to_thread(
+                    fal_client.subscribe,
+                    "fal-ai/flux-2",
+                    arguments={"prompt": prompt, "image_size": "square"}
+                ),
+                timeout=35
+            )
+            image_url = _extract_image_url(result)
+            model_used = "fal-ai/flux-2"
+        except Exception as e:
+            errors.append(f"t2i failed: {e}")
+
+    if not image_url:
+        detail = "; ".join(errors) if errors else "image generation failed"
+        raise HTTPException(status_code=502, detail=detail[:500])
+
+    persona.profile_image_url = image_url
+    persona.image_prompt = prompt
+    gallery = _build_persona_gallery(persona)
+    gallery = [item for item in gallery if str(item.get("url") or "").strip() != image_url]
+    gallery.insert(0, {
+        "url": image_url,
+        "prompt": prompt,
+        "shot_type": "primary",
+        "model": model_used or "",
+        "created_at": datetime.now(KST).strftime("%Y-%m-%d %H:%M")
+    })
+    _save_persona_gallery(persona, gallery[:MAX_PROFILE_PHOTOS])
+    db.commit()
+
+    # Update active volatile states for all rooms tied to this persona.
+    persona_room_ids = [r.id for r in db.query(ChatRoom).filter(ChatRoom.persona_id == persona.id).all()]
+    for rid in persona_room_ids:
+        if rid in volatile_memory and isinstance(volatile_memory[rid].get("p_dict"), dict):
+            volatile_memory[rid]["p_dict"]["profile_image_url"] = image_url
+            volatile_memory[rid]["p_dict"]["image_prompt"] = prompt
+
+    return {
+        "status": "success",
+        "room_id": room_id,
+        "persona_id": persona.id,
+        "image_url": image_url,
+        "model": model_used,
+        "profile_images": _build_persona_gallery(persona)
+    }
+
+
+@app.post("/admin/room/{room_id}/profile-image/add")
+async def admin_add_profile_image(room_id: int, data: dict = Body(...), current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    if not current_user or not current_user.is_admin:
+        raise HTTPException(status_code=403)
+
+    room = db.query(ChatRoom).filter(ChatRoom.id == room_id).first()
+    if not room or not room.persona:
+        raise HTTPException(status_code=404, detail="Room/persona not found")
+
+    persona = room.persona
+    prompt = str(data.get("prompt") or "").strip()
+    model_choice = str(data.get("model") or "flux").strip().lower()
+    set_primary = bool(data.get("set_primary", False))
+    if not prompt:
+        raise HTTPException(status_code=400, detail="prompt is required")
+    if model_choice not in ("flux", "edit"):
+        raise HTTPException(status_code=400, detail="model must be 'flux' or 'edit'")
+
+    gallery = _build_persona_gallery(persona)
+    if len(gallery) >= MAX_PROFILE_PHOTOS:
+        raise HTTPException(status_code=400, detail=f"profile images already reached {MAX_PROFILE_PHOTOS}")
+
+    def _extract_image_url(result: Any) -> Optional[str]:
+        if not result or not isinstance(result, dict):
+            return None
+        if isinstance(result.get("images"), list) and result["images"]:
+            first = result["images"][0]
+            if isinstance(first, dict):
+                return first.get("url")
+        data_obj = result.get("data")
+        if isinstance(data_obj, dict) and isinstance(data_obj.get("images"), list) and data_obj["images"]:
+            first = data_obj["images"][0]
+            if isinstance(first, dict):
+                return first.get("url")
+        return None
+
+    try:
+        if model_choice == "edit":
+            if not persona.face_base_url:
+                raise HTTPException(status_code=400, detail="base face is not available for edit model")
+            fal_face_url = await asyncio.to_thread(_prepare_fal_image_url, persona.face_base_url)
+            result = await asyncio.wait_for(
+                asyncio.to_thread(
+                    fal_client.subscribe,
+                    "fal-ai/nano-banana/edit",
+                    arguments={
+                        "prompt": prompt,
+                        "image_urls": [fal_face_url],
+                        "num_images": 1,
+                        "aspect_ratio": "1:1"
+                    }
+                ),
+                timeout=35
+            )
+            model_used = "fal-ai/nano-banana/edit"
+        else:
+            result = await asyncio.wait_for(
+                asyncio.to_thread(
+                    fal_client.subscribe,
+                    "fal-ai/flux-2",
+                    arguments={"prompt": prompt, "image_size": "square"}
+                ),
+                timeout=35
+            )
+            model_used = "fal-ai/flux-2"
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"image generation failed: {str(e)[:300]}")
+
+    image_url = _extract_image_url(result)
+    if not image_url:
+        raise HTTPException(status_code=502, detail="image generation returned empty image")
+
+    gallery.append({
+        "url": image_url,
+        "prompt": prompt,
+        "shot_type": "manual",
+        "model": model_used,
+        "created_at": datetime.now(KST).strftime("%Y-%m-%d %H:%M")
+    })
+    _save_persona_gallery(persona, gallery[:MAX_PROFILE_PHOTOS])
+    if set_primary:
+        persona.profile_image_url = image_url
+        persona.image_prompt = prompt
+    db.commit()
+
+    persona_room_ids = [r.id for r in db.query(ChatRoom).filter(ChatRoom.persona_id == persona.id).all()]
+    for rid in persona_room_ids:
+        if rid in volatile_memory and isinstance(volatile_memory[rid].get("p_dict"), dict):
+            volatile_memory[rid]["p_dict"]["profile_image_url"] = persona.profile_image_url
+            volatile_memory[rid]["p_dict"]["image_prompt"] = persona.image_prompt
+            volatile_memory[rid]["p_dict"]["profile_images"] = _build_persona_gallery(persona)
+
+    return {
+        "status": "success",
+        "room_id": room_id,
+        "persona_id": persona.id,
+        "image_url": image_url,
+        "model": model_used,
+        "profile_images": _build_persona_gallery(persona),
+    }
 
 
 @app.get("/admin/prompts")
@@ -729,6 +1550,7 @@ async def admin_global_notice(data: dict = Body(...), current_user: User = Depen
     db.commit()
 
     count = 0
+    from memory import volatile_memory
     for rid, vs in volatile_memory.items():
         async with vs['lock']:
             ts = datetime.now(KST).strftime("%H:%M:%S")
@@ -747,6 +1569,645 @@ async def admin_global_notice(data: dict = Body(...), current_user: User = Depen
 
     return {"status": "success", "notified_rooms": count}
 
+# ---------------------------------------------------------
+# [v3.6.0] 관리자: 이브 배치 생성기 (Phase 1)
+# ---------------------------------------------------------
+import uuid
+
+batch_status = {}  # { job_id: { total, created, failed, done } }
+
+def build_ethnicity_prompt(white: int, black: int, asian: int) -> str:
+    """인종 가중치에서 ±1~5 랜덤 진동 후 합이 100이 되도록 정규화"""
+    def jitter(v): return max(0, v + random.randint(-5, 5))
+    w, b, a = jitter(white), jitter(black), jitter(asian)
+    total = w + b + a
+    if total == 0: 
+        w, b, a = 33, 33, 34
+    else:
+        w = round(w / total * 100)
+        b = round(b / total * 100)
+        a = 100 - w - b
+        if a < 0:
+            a = 0
+            w = round(w / (w + b) * 100) if (w + b) > 0 else 50
+            b = 100 - w
+            
+    parts = []
+    if w > 0: parts.append(f"Caucasian {w}%")
+    if b > 0: parts.append(f"Black {b}%")
+    if a > 0: parts.append(f"East Asian {a}%")
+    return ", ".join(parts)
+
+async def create_single_eve(white: int, black: int, asian: int, db: Session, female_percent: int = 50, multinational: bool = False):
+    mbtis = [
+        "ISTJ", "ISFJ", "INFJ", "INTJ", "ISTP", "ISFP", "INFP", "INTP", "ESTP",
+        "ESFP", "ENFP", "ENTP", "ESTJ", "ESFJ", "ENFJ", "ENTJ"
+    ]
+    # 여성 비율에 따른 성별 결정
+    gender = "여성" if random.randint(0, 99) < female_percent else "남성"
+    age = random.randint(19, 36)
+    mbti = random.choice(mbtis)
+    
+    p_seriousness = random.randint(1, 10)
+    p_friendliness = random.randint(1, 10)
+    p_rationality = random.randint(1, 10)
+    p_slang = random.randint(1, 10)
+    
+    temp_p_dict = {
+        "name": "Member", "age": age, "gender": gender, "mbti": mbti,
+        "p_seriousness": p_seriousness, "p_friendliness": p_friendliness,
+        "p_rationality": p_rationality, "p_slang": p_slang
+    }
+    
+    try:
+        life_data, _ = await asyncio.wait_for(generate_eve_life_details(temp_p_dict), timeout=25)
+    except Exception:
+        life_data = None
+    job = "직장인"
+    intro = "밝은 성격"
+    profile_details = {}
+    daily_schedule = {}
+    
+    if life_data:
+        profile_details = life_data.get('profile_details', {})
+        daily_schedule = life_data.get('daily_schedule', {})
+        job = profile_details.get('job', '직장인')
+        intro = profile_details.get('intro', '밝은 성격')
+        
+    temp_p_dict['job'] = job
+    temp_p_dict['intro'] = intro
+    try:
+        name = await asyncio.wait_for(generate_eve_nickname(temp_p_dict), timeout=15)
+    except Exception:
+        name = generate_random_nickname()
+    
+    p_dict_for_visuals = {
+        "age": age, "gender": gender, "mbti": mbti, "job": job, "intro": intro
+    }
+    try:
+        image_prompt, _ = await asyncio.wait_for(generate_eve_visuals(p_dict_for_visuals), timeout=15)
+    except Exception:
+        image_prompt = f"candid smartphone snapshot, natural korean profile photo, {age} years old"
+    
+    face_base_url = None
+    profile_image_url = None
+    ethnicity_prompt = build_ethnicity_prompt(white, black, asian) if multinational else "Korean"
+    
+    try:
+        face_look = "beautiful korean" if gender == "여성" else "handsome korean"
+        base_prompt = f"passport photo, {face_look}, {ethnicity_prompt}, neutral expression, white background, {gender}, {age} years old"
+        base_result = await asyncio.wait_for(
+            asyncio.to_thread(
+                fal_client.subscribe,
+                "fal-ai/flux-2",
+                arguments={"prompt": base_prompt, "image_size": "square"}
+            ),
+            timeout=35
+        )
+        if base_result and 'images' in base_result:
+            face_base_url = base_result['images'][0]['url']
+            
+        if face_base_url:
+            if gender == "여성":
+                profile_prompt = f"close-up face portrait, candid Instagram dating profile photo, {image_prompt}, ultra realistic, low quality smartphone snapshot"
+            else:
+                profile_prompt = f"candid Instagram dating profile photo, {image_prompt}, ultra realistic, low quality smartphone snapshot"
+            # nano-banana/edit expects image_urls (array), not image_url.
+            edit_result = await asyncio.wait_for(
+                asyncio.to_thread(
+                    fal_client.subscribe,
+                    "fal-ai/nano-banana/edit",
+                    arguments={
+                        "prompt": profile_prompt,
+                        "image_urls": [face_base_url],
+                        "num_images": 1,
+                        "aspect_ratio": "1:1"
+                    }
+                ),
+                timeout=35
+            )
+            if edit_result and 'images' in edit_result:
+                profile_image_url = edit_result['images'][0]['url']
+    except Exception as e:
+        print(f"Batch Image Generation Error: {e}")
+        with open("fal_err.txt", "a") as f:
+            f.write(f"Error: {str(e)}\nPrompt: {base_prompt}\n")
+        
+    if not daily_schedule:
+        daily_schedule = {
+            "wake_time": "08:00",
+            "daily_tasks": ["일상 활동", "여가 시간"],
+            "sleep_time": "23:00"
+        }
+    
+    feed_hours = sorted(random.sample(range(9, 23), 3))
+    feed_times = [f"{str(h).zfill(2)}:00" for h in feed_hours]
+    
+    all_users = db.query(User).all()
+    initial_registry = []
+    for u in all_users:
+        initial_registry.append({
+            "user_id": u.id, "display_name": u.display_name or u.username,
+            "relationship": "낯선 사람", "last_talked": None, "memo": ""
+        })
+        
+    p = Persona(owner_id=None, name=name, age=age, gender=gender, mbti=mbti,
+                p_seriousness=p_seriousness, p_friendliness=p_friendliness,
+                p_rationality=p_rationality, p_slang=p_slang,
+                profile_image_url=profile_image_url, image_prompt=image_prompt,
+                profile_images=[{
+                    "url": profile_image_url,
+                    "prompt": image_prompt,
+                    "shot_type": "primary",
+                    "model": "fal-ai/nano-banana/edit" if face_base_url else "fal-ai/flux-2",
+                    "created_at": datetime.now(KST).strftime("%Y-%m-%d %H:%M")
+                }] if profile_image_url else [],
+                last_schedule_date=datetime.now(KST), profile_details=profile_details,
+                daily_schedule=daily_schedule, face_base_url=face_base_url,
+                feed_times=feed_times, user_registry=initial_registry)
+    db.add(p)
+    db.commit()
+    db.refresh(p)
+    
+    admin_users = _get_admin_users(db)
+    for u in admin_users:
+        room = ChatRoom(owner_id=u.id, persona_id=p.id,
+                        v_likeability=random.randint(20, 100),
+                        v_erotic=random.randint(10, 40),
+                        v_v_mood=random.randint(20, 100),
+                        v_relationship=random.randint(20, 100))
+        db.add(room)
+    db.commit()
+        
+    return p
+
+async def create_single_eve_task(white: int, black: int, asian: int, female_percent: int = 50, multinational: bool = False):
+    """Batch worker wrapper: isolate DB session per Eve."""
+    db = SessionLocal()
+    try:
+        p = await create_single_eve(white, black, asian, db, female_percent, multinational)
+        # Return plain data before closing session to avoid detached-instance access.
+        return {"id": p.id, "name": p.name, "mbti": p.mbti}
+    finally:
+        db.close()
+
+async def batch_create_task(job_id: str, count: int, white: int, black: int, asian: int, female_percent: int = 50, multinational: bool = False):
+    BATCH_SIZE = 7
+    created = 0
+    attempts = 0
+    max_attempts = count * 2
+    try:
+        batch_status[job_id]['logs'].append("배치 생성 시작")
+        while created < count and attempts < max_attempts:
+            batch = min(BATCH_SIZE, count - created)
+            tasks = [
+                asyncio.wait_for(
+                    create_single_eve_task(white, black, asian, female_percent, multinational),
+                    timeout=90
+                ) for _ in range(batch)
+            ]
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            attempts += batch
+            for r in results:
+                if isinstance(r, Exception):
+                    print(f"Batch Create Warning: {r}")
+                    batch_status[job_id]['failed'] += 1
+                    err_name = type(r).__name__
+                    batch_status[job_id]['logs'].append(f"생성 실패({err_name}): {str(r)[:120]}")
+                else:
+                    created += 1
+                    batch_status[job_id]['created'] = created
+                    name = r.get("name", "unknown") if isinstance(r, dict) else "unknown"
+                    mbti = r.get("mbti", "????") if isinstance(r, dict) else "????"
+                    batch_status[job_id]['logs'].append(f"생성 성공: {name} ({mbti})")
+
+            if len(batch_status[job_id]['logs']) > 100:
+                batch_status[job_id]['logs'] = batch_status[job_id]['logs'][-100:]
+
+            await asyncio.sleep(1)
+
+        if attempts >= max_attempts and created < count:
+            batch_status[job_id]['logs'].append("최대 시도 횟수에 도달했습니다.")
+    except Exception as e:
+        batch_status[job_id]['logs'].append(f"배치 작업 오류: {str(e)}")
+    finally:
+        batch_status[job_id]['done'] = True
+
+active_batch_job_id = None
+
+@app.post("/admin/batch-create-eves")
+async def admin_batch_create_eves(data: dict = Body(...), current_user: User = Depends(get_current_user)):
+    global active_batch_job_id
+    if not current_user or not current_user.is_admin:
+        raise HTTPException(status_code=403, detail="Admin restricted")
+
+    # Accept null/empty values safely from UI and keep totals sane.
+    count = _clamp_int(data.get("count"), 1, 1, 200)
+    white = _clamp_int(data.get("white"), 33, 0, 100)
+    black = _clamp_int(data.get("black"), 33, 0, 100)
+    asian = _clamp_int(data.get("asian"), 34, 0, 100)
+    female_percent = _clamp_int(data.get("female_percent"), 50, 0, 100)
+    multinational = bool(data.get("multinational", False))
+    
+    job_id = str(uuid.uuid4())
+    active_batch_job_id = job_id
+    batch_status[job_id] = { "total": count, "created": 0, "failed": 0, "done": False, "logs": [] }
+    
+    asyncio.create_task(batch_create_task(job_id, count, white, black, asian, female_percent, multinational))
+    
+    return {"status": "success", "job_id": job_id}
+
+@app.get("/admin/active-batch-job")
+def admin_active_batch_job(current_user: User = Depends(get_current_user)):
+    if not current_user or not current_user.is_admin:
+        raise HTTPException(status_code=403, detail="Admin restricted")
+    if active_batch_job_id and active_batch_job_id in batch_status:
+        return {"job_id": active_batch_job_id, "status": batch_status[active_batch_job_id]}
+    return {"job_id": None}
+        
+    count = int(data.get("count", 1))
+    white = int(data.get("white", 33))
+    black = int(data.get("black", 33))
+    asian = int(data.get("asian", 34))
+    female_percent = int(data.get("female_percent", 50))
+    
+    job_id = str(uuid.uuid4())
+    batch_status[job_id] = { "total": count, "created": 0, "failed": 0, "done": False }
+    
+    asyncio.create_task(batch_create_task(job_id, count, white, black, asian, female_percent))
+    
+    return {"status": "success", "job_id": job_id}
+
+@app.get("/admin/batch-status/{job_id}")
+def admin_batch_status(job_id: str, current_user: User = Depends(get_current_user)):
+    if not current_user or not current_user.is_admin:
+        raise HTTPException(status_code=403, detail="Admin restricted")
+    if job_id not in batch_status:
+        raise HTTPException(status_code=404, detail="Job not found")
+        
+    st = batch_status[job_id]
+    return st
+
+
+CUSTOM_EVE_MBTIS = [
+    "ISTJ", "ISFJ", "INFJ", "INTJ", "ISTP", "ISFP", "INFP", "INTP",
+    "ESTP", "ESFP", "ENFP", "ENTP", "ESTJ", "ESFJ", "ENFJ", "ENTJ"
+]
+
+
+def _clamp_int(value: Any, default: int, minimum: int, maximum: int) -> int:
+    try:
+        parsed = int(value)
+    except Exception:
+        parsed = default
+    return max(minimum, min(maximum, parsed))
+
+
+def _normalize_gender(value: Any) -> str:
+    raw = str(value or "").strip().lower()
+    if raw in ["male", "man", "m", "남", "남성"]:
+        return "남성"
+    if raw in ["female", "woman", "f", "여", "여성"]:
+        return "여성"
+    return random.choice(["남성", "여성"])
+
+
+def _normalize_mbti(value: Any) -> str:
+    raw = str(value or "").strip().upper()
+    if raw in CUSTOM_EVE_MBTIS:
+        return raw
+    return random.choice(CUSTOM_EVE_MBTIS)
+
+
+def _pick_feed_times(value: Any) -> List[str]:
+    if isinstance(value, list):
+        cleaned = []
+        for v in value:
+            s = str(v).strip()
+            if re.match(r"^\d{2}:\d{2}$", s):
+                cleaned.append(s)
+        if cleaned:
+            return cleaned[:5]
+    feed_hours = sorted(random.sample(range(9, 23), 3))
+    return [f"{str(h).zfill(2)}:00" for h in feed_hours]
+
+
+def _merge_missing(base: dict, generated: dict) -> dict:
+    merged = dict(base or {})
+    for k, v in (generated or {}).items():
+        if k in merged and isinstance(merged[k], list) and isinstance(v, list):
+            # Keep user-provided list items and only append missing slots.
+            target_len = 3 if k in ["interests", "daily_tasks"] else len(v)
+            existing = [item for item in merged[k] if item not in [None, ""]]
+            for item in v:
+                if item not in existing:
+                    existing.append(item)
+                if len(existing) >= target_len:
+                    break
+            merged[k] = existing
+            continue
+        if k not in merged or merged[k] in [None, "", []]:
+            merged[k] = v
+    return merged
+
+
+def _sanitize_profile_details(value: Any) -> dict:
+    if not isinstance(value, dict):
+        return {}
+    hook = str(value.get("hook", "")).strip()
+    return {"hook": hook} if hook else {}
+
+
+def _prepare_fal_image_url(raw_value: str) -> str:
+    """
+    Normalize image input for fal edit models.
+    - http(s) URL: pass through
+    - data:image/...;base64,...: upload to fal storage and return public URL
+    - existing local file path: upload file and return public URL
+    """
+    v = (raw_value or "").strip()
+    if not v:
+        return ""
+    if v.startswith("http://") or v.startswith("https://"):
+        # Re-upload external URLs to fal storage so edit workers can fetch reliably.
+        try:
+            with urllib.request.urlopen(v, timeout=20) as resp:
+                blob = resp.read()
+                ctype = resp.headers.get_content_type() or "image/jpeg"
+            return fal_client.upload(blob, content_type=ctype, file_name="custom-face-url")
+        except Exception:
+            return v
+    if v.startswith("data:image/"):
+        try:
+            header, b64data = v.split(",", 1)
+        except ValueError:
+            raise ValueError("Invalid data URL format")
+        mime = header.split(";")[0][5:] if ";" in header else "image/png"
+        try:
+            blob = base64.b64decode(b64data, validate=True)
+        except binascii.Error as e:
+            raise ValueError(f"Invalid base64 image payload: {e}")
+        return fal_client.upload(blob, content_type=mime, file_name="custom-face")
+    if os.path.isfile(v):
+        return fal_client.upload_file(v)
+    return v
+
+
+def _get_admin_users(db: Session) -> List[User]:
+    return db.query(User).filter(User.is_admin == True).all()
+
+
+def _sync_admin_rooms_for_all_personas(db: Session):
+    """Ensure every admin has a ChatRoom for every persona in the global Eve pool."""
+    admins = _get_admin_users(db)
+    if not admins:
+        return
+
+    persona_ids = [pid for (pid,) in db.query(Persona.id).all()]
+    if not persona_ids:
+        return
+
+    created_count = 0
+    for admin in admins:
+        for persona_id in persona_ids:
+            exists = db.query(ChatRoom.id).filter(
+                ChatRoom.owner_id == admin.id,
+                ChatRoom.persona_id == persona_id
+            ).first()
+            if exists:
+                continue
+            db.add(ChatRoom(
+                owner_id=admin.id,
+                persona_id=persona_id,
+                v_likeability=random.randint(20, 100),
+                v_erotic=random.randint(10, 40),
+                v_v_mood=random.randint(20, 100),
+                v_relationship=random.randint(20, 100)
+            ))
+            created_count += 1
+
+    if created_count > 0:
+        db.commit()
+
+
+async def _autofill_custom_eve_payload(raw_data: dict) -> dict:
+    data = raw_data or {}
+
+    age = _clamp_int(data.get("age"), random.randint(19, 36), 19, 60)
+    gender = _normalize_gender(data.get("gender"))
+    mbti = _normalize_mbti(data.get("mbti"))
+
+    p_seriousness = _clamp_int(data.get("p_seriousness"), random.randint(1, 10), 1, 10)
+    p_friendliness = _clamp_int(data.get("p_friendliness"), random.randint(1, 10), 1, 10)
+    p_rationality = _clamp_int(data.get("p_rationality"), random.randint(1, 10), 1, 10)
+    p_slang = _clamp_int(data.get("p_slang"), random.randint(1, 10), 1, 10)
+
+    profile_details = _sanitize_profile_details(data.get("profile_details"))
+    daily_schedule = data.get("daily_schedule") if isinstance(data.get("daily_schedule"), dict) else {}
+
+    seeded_name = str(data.get("name") or "").strip()
+
+    temp_p_dict = {
+        "name": seeded_name or "Member",
+        "age": age,
+        "gender": gender,
+        "mbti": mbti,
+        "p_seriousness": p_seriousness,
+        "p_friendliness": p_friendliness,
+        "p_rationality": p_rationality,
+        "p_slang": p_slang,
+        # Seed hints so AI can complete only missing fields in-context.
+        "profile_details": profile_details,
+        "daily_schedule": daily_schedule
+    }
+
+    life_data, _ = await generate_eve_life_details(temp_p_dict)
+    generated_profile = {}
+    generated_schedule = {}
+    if life_data:
+        generated_profile = life_data.get("profile_details", {}) or {}
+        generated_schedule = life_data.get("daily_schedule", {}) or {}
+
+    profile_details = _sanitize_profile_details(_merge_missing(profile_details, generated_profile))
+    daily_schedule = _merge_missing(daily_schedule, generated_schedule)
+
+    if not daily_schedule:
+        daily_schedule = {
+            "wake_time": "08:00",
+            "daily_tasks": ["일상 활동", "자기계발 시간"],
+            "sleep_time": "23:00"
+        }
+
+    job = str(profile_details.get("job", "")).strip()
+    intro = str(profile_details.get("intro", "")).strip()
+
+    name = str(data.get("name") or "").strip()
+    if not name:
+        temp_p_dict["job"] = job or "직장인"
+        temp_p_dict["intro"] = intro or "밝은 성격"
+        name = await generate_eve_nickname(temp_p_dict)
+
+    image_prompt = str(data.get("image_prompt") or "").strip()
+    if not image_prompt:
+        visual_input = {
+            "age": age,
+            "gender": gender,
+            "mbti": mbti,
+            "job": job or "직장인",
+            "intro": intro or "밝은 성격"
+        }
+        image_prompt, _ = await generate_eve_visuals(visual_input)
+
+    payload = {
+        "name": name,
+        "age": age,
+        "gender": gender,
+        "mbti": mbti,
+        "p_seriousness": p_seriousness,
+        "p_friendliness": p_friendliness,
+        "p_rationality": p_rationality,
+        "p_slang": p_slang,
+        "image_prompt": image_prompt,
+        "face_base_url": str(data.get("face_base_url") or "").strip(),
+        "profile_image_url": str(data.get("profile_image_url") or "").strip(),
+        "profile_details": profile_details,
+        "daily_schedule": daily_schedule,
+        "feed_times": _pick_feed_times(data.get("feed_times")),
+        "v_likeability": _clamp_int(data.get("v_likeability"), random.randint(20, 100), 0, 100),
+        "v_erotic": _clamp_int(data.get("v_erotic"), random.randint(10, 40), 0, 100),
+        "v_v_mood": _clamp_int(data.get("v_v_mood"), random.randint(20, 100), 0, 100),
+        "v_relationship": _clamp_int(data.get("v_relationship"), random.randint(20, 100), 0, 100),
+        "generate_image": bool(data.get("generate_image", True))
+    }
+    return payload
+
+
+@app.post("/admin/custom-eve/autofill")
+async def admin_custom_eve_autofill(data: dict = Body(...), current_user: User = Depends(get_current_user)):
+    if not current_user.is_admin:
+        raise HTTPException(status_code=403, detail="Admin restricted")
+    filled = await _autofill_custom_eve_payload(data)
+    return {"status": "success", "data": filled}
+
+
+@app.post("/admin/custom-eve/create")
+async def admin_custom_eve_create(data: dict = Body(...), current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    if not current_user.is_admin:
+        raise HTTPException(status_code=403, detail="Admin restricted")
+
+    payload = await _autofill_custom_eve_payload(data)
+    face_base_url = payload.get("face_base_url")
+    profile_image_url = payload.get("profile_image_url")
+    image_error = None
+
+    if (not profile_image_url) and payload.get("image_prompt") and payload.get("generate_image"):
+        try:
+            if face_base_url:
+                fal_face_url = await asyncio.to_thread(_prepare_fal_image_url, face_base_url)
+                result = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        fal_client.subscribe,
+                        "fal-ai/nano-banana/edit",
+                        arguments={
+                            "prompt": payload["image_prompt"],
+                            "image_urls": [fal_face_url],
+                            "num_images": 1,
+                            "aspect_ratio": "1:1"
+                        }
+                    ),
+                    timeout=35
+                )
+            else:
+                result = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        fal_client.subscribe,
+                        "fal-ai/flux-2",
+                        arguments={
+                            "prompt": payload["image_prompt"],
+                            "image_size": "square"
+                        }
+                    ),
+                    timeout=35
+                )
+            if result and "images" in result:
+                profile_image_url = result["images"][0]["url"]
+            elif result and isinstance(result, dict) and isinstance(result.get("data"), dict) and result["data"].get("images"):
+                profile_image_url = result["data"]["images"][0]["url"]
+            else:
+                image_error = f"unexpected response: {str(result)[:300]}"
+        except Exception as e:
+            image_error = str(e)
+            print(f"Custom Eve image generation failed: {e}")
+
+    if payload.get("generate_image") and (not profile_image_url) and (not payload.get("profile_image_url")):
+        detail = "프로필 이미지 생성 실패"
+        if image_error:
+            detail = f"{detail}: {image_error}"
+        raise HTTPException(status_code=502, detail=detail)
+
+    all_users = db.query(User).all()
+    initial_registry = []
+    for u in all_users:
+        initial_registry.append({
+            "user_id": u.id,
+            "display_name": u.display_name or u.username,
+            "relationship": "낯선 사람",
+            "last_talked": None,
+            "memo": ""
+        })
+
+    p = Persona(
+        owner_id=None,
+        name=payload["name"],
+        age=payload["age"],
+        gender=payload["gender"],
+        mbti=payload["mbti"],
+        p_seriousness=payload["p_seriousness"],
+        p_friendliness=payload["p_friendliness"],
+        p_rationality=payload["p_rationality"],
+        p_slang=payload["p_slang"],
+        profile_image_url=profile_image_url,
+        profile_images=[{
+            "url": profile_image_url,
+            "prompt": payload["image_prompt"],
+            "shot_type": "primary",
+            "model": "fal-ai/nano-banana/edit" if face_base_url else "fal-ai/flux-2",
+            "created_at": datetime.now(KST).strftime("%Y-%m-%d %H:%M")
+        }] if profile_image_url else [],
+        face_base_url=face_base_url or None,
+        image_prompt=payload["image_prompt"],
+        last_schedule_date=datetime.now(KST),
+        profile_details=payload["profile_details"],
+        daily_schedule=payload["daily_schedule"],
+        feed_times=payload["feed_times"],
+        user_registry=initial_registry,
+        shared_memory=[],
+        shared_journal=[]
+    )
+    db.add(p)
+    db.commit()
+    db.refresh(p)
+
+    admin_users = _get_admin_users(db)
+    for u in admin_users:
+        room = ChatRoom(
+            owner_id=u.id,
+            persona_id=p.id,
+            v_likeability=payload["v_likeability"],
+            v_erotic=payload["v_erotic"],
+            v_v_mood=payload["v_v_mood"],
+            v_relationship=payload["v_relationship"]
+        )
+        db.add(room)
+    db.commit()
+
+    return {
+        "status": "success",
+        "persona_id": p.id,
+        "name": p.name,
+        "face_base_url": p.face_base_url,
+        "profile_image_url": p.profile_image_url
+    }
 
 # ---------------------------------------------------------
 # 3. 생애 주기 시뮬레이션 엔진 (v1.3.0)
@@ -776,29 +2237,39 @@ def generate_random_nickname():
 
 
 async def generate_eve_life_details(p_dict):
-    """제미나이를 이용해 이브의 틴더식 프로필 디테일과 하루 일과를 생성합니다."""
+    """제미나이를 이용해 이브의 최소 프로필(hook)과 하루 일과를 생성합니다."""
     # [v1.4.2 복구] 당신의 정교한 프롬프트 전문 복구
     date_info = get_date_info()
+    existing_profile = p_dict.get("profile_details", {}) if isinstance(p_dict.get("profile_details"), dict) else {}
+    existing_schedule = p_dict.get("daily_schedule", {}) if isinstance(p_dict.get("daily_schedule"), dict) else {}
+    existing_profile = _sanitize_profile_details(existing_profile)
+    existing_profile_str = json.dumps(existing_profile, ensure_ascii=False)
+    existing_schedule_str = json.dumps(existing_schedule, ensure_ascii=False)
     prompt = f"""
-    당신은 틴더 스타일의 데이팅 앱에 가입했습니다.
+    당신은 틴더에서 짝을 만나기 위해 프로필을 작성 중입니다.
     오늘 날짜: {date_info['full_str']}
 
-    다음 기본 데이터를 바탕으로 당신만의 독창적인 [프로필 상세]와 [하루 일과]를 작성하세요.
+    다음 기본 데이터를 바탕으로 [프로필 hook]과 [하루 일과]를 작성하세요.
 
     [캐릭터 데이터]
     - 닉네임: {p_dict['name']}
-    - 나이/성별: {p_dict['age']}세, {p_dict['gender']}
+    - 나이: {p_dict['age']}세
     - MBTI: {p_dict['mbti']}
     - 성향: 진지함{p_dict['p_seriousness']}/10, 친근함{p_dict['p_friendliness']}/10, 상식{p_dict['p_rationality']}/10, 채팅체{p_dict['p_slang']}/10 
 
-    [임무 1: 프로필 상세 (Tinder Style)]
-    - Hook: 사용자의 시선을 끄는 첫 줄 매력 어필 문구.
-    - Introduction: 자신을 어필하는 짧은 소개. 
-    - Interests: 취미 3가지.
-    - Lifestyle: 수면, 음주, 운동 등 생활 습관.
-    - Job: 직업.
-    - Goal: 원하는 관계의 모습.
-    - TMI: 사소하고 재밌는 사실.
+    [입력 제약 - 반드시 준수]
+    - 사용자가 이미 입력한 profile_details 일부값: {existing_profile_str}
+    - 사용자가 이미 입력한 daily_schedule 일부값: {existing_schedule_str}
+    - 사용자가 입력한 값(비어있지 않은 값)은 절대 덮어쓰지 말 것.
+    - 빈 항목만 채울 것.
+    - profile_details에서는 hook만 허용하며, 다른 키는 절대 생성하지 말 것.
+    - 사용자가 일부만 입력한 리스트(예: daily_tasks)는 기존 항목을 유지하고 부족분만 채울 것.
+
+    [임무 1: 프로필 hook]
+    - Hook만 생성할 것.
+    - Hook은 반드시 나이, MBTI, 성향 4종만 참고해서 만들 것.
+    - 직업, 취미, TMI, 라이프스타일, 목표, 성별 정보는 절대 넣지 말 것.
+    - 길이는 1문장, 14~28자.
 
     [임무 2: 하루 일과]
     - 오늘({date_info['full_str']})의 일과를 요일과 공휴일 여부를 반영하여 작성하세요.
@@ -809,13 +2280,7 @@ async def generate_eve_life_details(p_dict):
     JSON 응답 형식:
     {{
         "profile_details": {{
-            "hook": "문구",
-            "intro": "자기소개",
-            "interests": ["관심사1", "관심사2", "관심사3"],
-            "lifestyle": "습관",
-            "job": "직업",
-            "goal": "목표",
-            "tmi": "사실"
+            "hook": "문구"
         }},
         "daily_schedule": {{
             "wake_time": "07:30",
@@ -830,6 +2295,7 @@ async def generate_eve_life_details(p_dict):
             contents=prompt,
             config={'response_mime_type': 'application/json'})
         data = json.loads(re.search(r'\{.*\}', res.text, re.DOTALL).group())
+        data['profile_details'] = _sanitize_profile_details(data.get('profile_details'))
         return data, res.usage_metadata.total_token_count
     except Exception as e:
         print(f"Life Detail Generation Error: {e}")
@@ -860,7 +2326,9 @@ async def websocket_endpoint(websocket: WebSocket, room_id: int):
                 User.username == payload.get("sub")).first()
 
     if not current_user_obj:
-        current_user_obj = db.query(User).filter(User.is_admin == True).first()
+        await websocket.close(code=1008)
+        db.close()
+        return
 
     await websocket.accept()
 
@@ -881,6 +2349,8 @@ async def websocket_endpoint(websocket: WebSocket, room_id: int):
         "p_friendliness": p.p_friendliness,
         "p_rationality": p.p_rationality,
         "p_slang": p.p_slang,
+        "profile_image_url": p.profile_image_url,
+        "profile_images": _build_persona_gallery(p),
         "profile_details": p.profile_details,
         "daily_schedule": p.daily_schedule
     }
@@ -955,7 +2425,7 @@ async def websocket_endpoint(websocket: WebSocket, room_id: int):
         user_id = current_user_obj.id
         try:
             while True:
-                await asyncio.sleep(0.5)
+                await asyncio.sleep(1.0)
 
                 if websocket.client_state != WebSocketState.CONNECTED:
                     break
@@ -1219,191 +2689,7 @@ async def add_friend(current_user: User = Depends(get_current_user),
                      db: Session = Depends(get_db)):
     if not current_user:
         raise HTTPException(status_code=401)
-
-    mbtis = [
-        "ISTJ", "ISFJ", "INFJ", "INTJ", "ISTP", "ISFP", "INFP", "INTP", "ESTP",
-        "ESFP", "ENFP", "ENTP", "ESTJ", "ESFJ", "ENFJ", "ENTJ"
-    ]
-    
-    # [v1.7.0] 사용자 설정에서 성별 필터 가져오기
-    user_settings = current_user.settings or {}
-    gender_filter = user_settings.get('eve_gender_filter', 'all')
-    
-    # 성별 필터 적용
-    if gender_filter == 'male':
-        gender = "남성"
-    elif gender_filter == 'female':
-        gender = "여성"
-    else:
-        gender = random.choice(["남성", "여성"])
-    
-    name = generate_random_nickname()
-    age = random.randint(19, 36)
-    mbti = random.choice(mbtis)
-    
-    p_seriousness = random.randint(1, 10)
-    p_friendliness = random.randint(1, 10)
-    p_rationality = random.randint(1, 10)
-    p_slang = random.randint(1, 10)
-    
-    # [v1.9.0] 라이프 데이터 먼저 생성 (직업, 소개 등 확보 위함)
-    temp_p_dict = {
-        "name": "Member", # 임시 이름
-        "age": age,
-        "gender": gender,
-        "mbti": mbti,
-        "p_seriousness": p_seriousness,
-        "p_friendliness": p_friendliness,
-        "p_rationality": p_rationality,
-        "p_slang": p_slang
-    }
-    
-    life_data, life_tokens = await generate_eve_life_details(temp_p_dict)
-    
-    job = "직장인"
-    intro = "밝은 성격"
-    profile_details = {}
-    daily_schedule = {}
-    
-    if life_data:
-        profile_details = life_data.get('profile_details', {})
-        daily_schedule = life_data.get('daily_schedule', {})
-        job = profile_details.get('job', '직장인')
-        intro = profile_details.get('intro', '밝은 성격')
-        
-    # [v1.9.1] 닉네임 생성 (프로필 반영)
-    temp_p_dict['job'] = job
-    temp_p_dict['intro'] = intro
-    name = await generate_eve_nickname(temp_p_dict)
-    print(f"[GENERATED NICKNAME] {name}")
-        
-    # [v1.9.0] 비주얼 컨셉 생성 (직업/소개 반영)
-    p_dict_for_visuals = {
-        "age": age,
-        "gender": gender,
-        "mbti": mbti,
-        # "p_seriousness": p_seriousness, # 비주얼 생성엔 굳이 필요없을 수 있음
-        # "p_friendliness": p_friendliness,
-        # "p_rationality": p_rationality,
-        # "p_slang": p_slang,
-        "job": job,
-        "intro": intro
-    }
-    
-    # 시각적 요소 생성 (이제 완성된 영어 프롬프트 문자열이 반환됨)
-    image_prompt, visual_tokens = await generate_eve_visuals(p_dict_for_visuals)
-    
-    print(f"[IMAGE PROMPT] {image_prompt}")
-
-    profile_image_url = None
-    try:
-        # fal.ai 호출
-        result = await asyncio.to_thread(fal_client.subscribe,
-                                         "xai/grok-imagine-image",
-                                         arguments={
-                                             "prompt": image_prompt,
-                                             "image_size": "square"
-                                         })
-        if result and 'images' in result:
-            profile_image_url = result['images'][0]['url']
-            user = db.query(User).filter(User.id == current_user.id).first()
-            if user: user.image_count += 1
-    except Exception as e:
-        print(f"Image Generation Error: {e}")
-        pass
-
-    # 페르소나 생성 및 저장
-    p = Persona(owner_id=current_user.id,
-                name=name,
-                age=age,
-                gender=gender,
-                mbti=mbti,
-                p_seriousness=p_seriousness,
-                p_friendliness=p_friendliness,
-                p_rationality=p_rationality,
-                p_slang=p_slang,
-                profile_image_url=profile_image_url,
-                image_prompt=image_prompt,
-                last_schedule_date=datetime.now(KST))
-    
-    # 라이프 데이터 적용
-    p.profile_details = profile_details
-    p.daily_schedule = daily_schedule
-    
-    # [v1.7.2] 일정이 비어있으면 기본값 설정
-    if not p.daily_schedule:
-        p.daily_schedule = {
-            "wake_time": "08:00",
-            "daily_tasks": ["일상 활동", "여가 시간"],
-            "sleep_time": "23:00"
-        }
-
-    # [v3.0.0] user_registry 초기화: 모든 기존 유저를 등록
-    all_users = db.query(User).all()
-    initial_registry = []
-    for u in all_users:
-        initial_registry.append({
-            "user_id": u.id,
-            "display_name": u.display_name or u.username,
-            "relationship": "낯선 사람",
-            "last_talked": None,
-            "memo": ""
-        })
-    p.user_registry = initial_registry
-    p.shared_memory = []
-    p.shared_journal = []
-    
-    db.add(p)
-    db.commit()
-    db.refresh(p)
-    
-    # 토큰 사용량 업데이트 (라이프 생성 + 비주얼 생성)
-    update_user_tokens(db, current_user.id, life_tokens + visual_tokens)
-
-    # [v2.0.0] Shared Universe: 생성된 이브를 모든 유저의 채팅방에 추가
-    current_room_id = None # 생성자에게 리턴할 room_id
-
-    for u in all_users:
-        room = ChatRoom(owner_id=u.id,
-                        persona_id=p.id,
-                        v_likeability=random.randint(20, 100),
-                        v_erotic=random.randint(10, 40),
-                        v_v_mood=random.randint(20, 100),
-                        v_relationship=random.randint(20, 100))
-        db.add(room)
-        db.commit()
-        db.refresh(room)
-        
-        if u.id == current_user.id:
-            current_room_id = room.id
-            # 생성자의 방에 대해서만 초기 사고 세팅 진행
-            v_state = get_volatile_state(room.id, room)
-            
-            # 중기 사고용 p_dict 재구성
-            final_p_dict = {
-                "name": p.name,
-                "age": p.age,
-                "gender": p.gender,
-                "mbti": p.mbti,
-                "p_seriousness": p.p_seriousness,
-                "p_friendliness": p.p_friendliness,
-                "p_rationality": p.p_rationality,
-                "p_slang": p_slang,
-                "profile_details": p.profile_details,
-                "daily_schedule": p.daily_schedule
-            }
-            
-            # [v3.0.0] persona 객체 전달
-            _, tokens = await run_medium_thinking(
-                v_state, final_p_dict, room.id,
-                current_user_id=current_user.id,
-                persona=p
-            )
-            update_user_tokens(db, current_user.id, tokens)
-            room.fact_warehouse = v_state['fact_warehouse']
-            db.commit() 
-            
-    return {"status": "success"}
+    raise HTTPException(status_code=410, detail="User Eve creation is disabled")
 
 
 @app.get("/friends")
@@ -1420,6 +2706,7 @@ def get_friends(current_user: User = Depends(get_current_user),
         "gender": r.persona.gender,
         "mbti": r.persona.mbti,
         "profile_image_url": r.persona.profile_image_url,
+        "profile_images": _build_persona_gallery(r.persona),
         "image_prompt": r.persona.image_prompt,
         "profile_details": r.persona.profile_details,
         "p_seriousness": r.persona.p_seriousness,
@@ -1465,9 +2752,18 @@ def get_persona_stats(persona_id: int,
             except (ValueError, TypeError):
                 pass
 
+    posts = db.query(FeedPost).filter(FeedPost.persona_id == persona_id).order_by(FeedPost.created_at.desc()).limit(3).all()
+    feed_data = [{
+        "id": f.id,
+        "content": f.content,
+        "image_url": f.image_url,
+        "created_at": (_to_kst(f.created_at) or f.created_at).strftime("%Y-%m-%d %H:%M")
+    } for f in posts]
+
     return {
         "total_friends": total_friends,
-        "active_chats_1h": active_chats_1h
+        "active_chats_1h": active_chats_1h,
+        "feed_posts": feed_data
     }
 
 
@@ -1591,9 +2887,12 @@ async def get_world_map(current_user: User = Depends(get_current_user), db: Sess
             "description": loc.description
         })
 
-    # 3. 내 친구들 위치 (아바타 표시용)
+    # 3. 내 친구들 위치 (아바타 표시용) + 지역별 전체 이브 리스트
     my_friends = []
+    district_eves = []
     my_rooms = db.query(ChatRoom).filter(ChatRoom.owner_id == current_user.id).all()
+    room_map = {r.persona_id: r.id for r in my_rooms}
+
     for room in my_rooms:
         p = room.persona
         if p.current_location_id:
@@ -1608,325 +2907,40 @@ async def get_world_map(current_user: User = Depends(get_current_user), db: Sess
                     "room_id": room.id
                 })
 
-    return {
-        "districts": list(districts.values()),
-        "friends": my_friends
-    }
-
-
-@app.get("/api/map")
-async def get_world_map(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    if not current_user: raise HTTPException(status_code=401)
-    
-    # 1. 구역별 인구 밀도 계산 (전체 이브)
-    # location_id -> count
-    pop_counts = {}
-    eves = db.query(Persona).all()
-    
-    # 임시: 위치가 없는 이브들에게 랜덤 위치 할당 (시각화 테스트용)
-    all_locs = db.query(MapLocation).all()
-    if not all_locs:
-        # DB에 맵 데이터가 없으면 시딩 시도
-        seed_world_map(db)
-        all_locs = db.query(MapLocation).all()
-        if not all_locs:
-             return {"districts": [], "friends": []}
-        
-    loc_map = {loc.id: loc for loc in all_locs}
-    
-    # 이브가 한 명도 없을 때도 맵 구조는 반환해야 함
-    for eve in eves:
-        if not eve.current_location_id:
-            # 여기서는 DB 저장 없이 메모리상에서만 랜덤 배정 (or 저장)
-            # 실제로는 스케줄러가 해야 함. 일단 시각화를 위해 랜덤 저장.
-            eve.current_location_id = random.choice(all_locs).id
-            db.commit()
-            
-        lid = eve.current_location_id
-        if lid:
-            pop_counts[lid] = pop_counts.get(lid, 0) + 1
-
-    # 2. 구역 데이터 구성
-    # District별로 그룹화
-    districts = {}
-    # 모든 Location을 순회하며 구조 생성 (이브 없어도 생성됨)
-    for loc in all_locs:
-        d_name = loc.district
-        if d_name not in districts:
-            districts[d_name] = {
-                "name": d_name,
-                "total_pop": 0,
-                "locations": []
-            }
-        
-        count = pop_counts.get(loc.id, 0)
-        districts[d_name]["total_pop"] += count
-        districts[d_name]["locations"].append({
-            "id": loc.id,
-            "name": loc.name,
-            "category": loc.category,
-            "pop": count,
-            "description": loc.description
+    for p in eves:
+        if not p.current_location_id:
+            continue
+        loc = loc_map.get(p.current_location_id)
+        if not loc:
+            continue
+        details = p.profile_details or {}
+        district_eves.append({
+            "id": p.id,
+            "name": p.name,
+            "age": p.age,
+            "mbti": p.mbti,
+            "gender": p.gender,
+            "image": p.profile_image_url,
+            "profile_images": _build_persona_gallery(p),
+            "image_prompt": p.image_prompt,
+            "p_seriousness": p.p_seriousness,
+            "p_friendliness": p.p_friendliness,
+            "p_rationality": p.p_rationality,
+            "p_slang": p.p_slang,
+            "district": loc.district,
+            "location_name": loc.name,
+            "profile_details": details,
+            "room_id": room_map.get(p.id)
         })
 
-    # 3. 내 친구들 위치 (아바타 표시용)
-    my_friends = []
-    my_rooms = db.query(ChatRoom).filter(ChatRoom.owner_id == current_user.id).all()
-    for room in my_rooms:
-        p = room.persona
-        if p.current_location_id:
-            loc = loc_map.get(p.current_location_id)
-            if loc:
-                my_friends.append({
-                    "id": p.id,
-                    "name": p.name,
-                    "image": p.profile_image_url,
-                    "district": loc.district,
-                    "location_name": loc.name,
-                    "room_id": room.id
-                })
-
     return {
         "districts": list(districts.values()),
-        "friends": my_friends
+        "friends": my_friends,
+        "district_eves": district_eves
     }
-
-
-# ---------------------------------------------------------
-# [v4.0.0] 관리자: 이브 배치 생성 시스템
-# ---------------------------------------------------------
-
-batch_jobs = {}  # { job_id: { total, created, failed, errors, done, eves } }
-
-
-class BatchCreateRequest(BaseModel):
-    count: int
-    white: int = 33
-    black: int = 33
-    asian: int = 34
-
-
-async def create_single_eve_for_batch(white: int, black: int, asian: int, db: Session) -> dict:
-    """단일 이브 생성 (배치용). add_friend 로직 기반, owner_id=None."""
-    from engine import generate_eve_visuals, generate_eve_nickname
-    
-    mbtis = [
-        "ISTJ", "ISFJ", "INFJ", "INTJ", "ISTP", "ISFP", "INFP", "INTP",
-        "ESTP", "ESFP", "ENFP", "ENTP", "ESTJ", "ESFJ", "ENFJ", "ENTJ"
-    ]
-    
-    gender = random.choice(["남성", "여성"])
-    age = random.randint(19, 36)
-    mbti = random.choice(mbtis)
-    p_seriousness = random.randint(1, 10)
-    p_friendliness = random.randint(1, 10)
-    p_rationality = random.randint(1, 10)
-    p_slang = random.randint(1, 10)
-    
-    # 라이프 데이터 생성
-    temp_p_dict = {
-        "name": "Member", "age": age, "gender": gender, "mbti": mbti,
-        "p_seriousness": p_seriousness, "p_friendliness": p_friendliness,
-        "p_rationality": p_rationality, "p_slang": p_slang
-    }
-    
-    life_data, _ = await generate_eve_life_details(temp_p_dict)
-    profile_details = {}
-    daily_schedule = {}
-    job = "직장인"
-    intro = "밝은 성격"
-    
-    if life_data:
-        profile_details = life_data.get('profile_details', {})
-        daily_schedule = life_data.get('daily_schedule', {})
-        job = profile_details.get('job', '직장인')
-        intro = profile_details.get('intro', '밝은 성격')
-    
-    # 닉네임 생성
-    temp_p_dict['job'] = job
-    temp_p_dict['intro'] = intro
-    name = await generate_eve_nickname(temp_p_dict)
-    
-    # 인종 가중치 적용 프롬프트 생성
-    ethnicity_prompt = build_ethnicity_prompt(white, black, asian)
-    
-    # Step 1: 얼굴 베이스 생성 (passport photo)
-    face_base_prompt = build_face_base_prompt(ethnicity_prompt, gender, age)
-    face_base_url = None
-    try:
-        result = await asyncio.to_thread(fal_client.subscribe,
-                                         "xai/grok-imagine-image",
-                                         arguments={
-                                             "prompt": face_base_prompt,
-                                             "image_size": "square"
-                                         })
-        if result and 'images' in result:
-            face_base_url = result['images'][0]['url']
-    except Exception as e:
-        print(f"[BATCH] Face Base Error for {name}: {e}")
-    
-    # Step 2: 프로필 이미지 생성 (i2i with face base, or fallback to direct generation)
-    p_dict_for_visuals = {"age": age, "gender": gender, "mbti": mbti, "job": job, "intro": intro}
-    image_prompt, _ = await generate_eve_visuals(p_dict_for_visuals)
-    
-    profile_image_url = None
-    if face_base_url:
-        # i2i: 얼굴 베이스 + 프로필 프롬프트
-        try:
-            result = await asyncio.to_thread(fal_client.subscribe,
-                                             "xai/grok-imagine-image/edit",
-                                             arguments={
-                                                 "prompt": image_prompt,
-                                                 "image_url": face_base_url,
-                                                 "image_size": "square"
-                                             })
-            if result and 'images' in result:
-                profile_image_url = result['images'][0]['url']
-        except Exception as e:
-            print(f"[BATCH] i2i Profile Error for {name}: {e}, falling back to direct gen")
-    
-    # Fallback: 직접 생성
-    if not profile_image_url:
-        try:
-            result = await asyncio.to_thread(fal_client.subscribe,
-                                             "xai/grok-imagine-image",
-                                             arguments={
-                                                 "prompt": image_prompt,
-                                                 "image_size": "square"
-                                             })
-            if result and 'images' in result:
-                profile_image_url = result['images'][0]['url']
-        except Exception as e:
-            print(f"[BATCH] Fallback Image Error for {name}: {e}")
-    
-    # 피드 활동 시간 랜덤 생성 (하루 3번)
-    hours = sorted(random.sample(range(8, 23), 3))
-    feed_times = [f"{h:02d}:00" for h in hours]
-    
-    # 일정 기본값
-    if not daily_schedule:
-        daily_schedule = {
-            "wake_time": "08:00",
-            "daily_tasks": ["일상 활동", "여가 시간"],
-            "sleep_time": "23:00"
-        }
-    
-    # Persona 생성 (owner_id=None → 공유 이브)
-    p = Persona(
-        owner_id=None,
-        name=name, age=age, gender=gender, mbti=mbti,
-        p_seriousness=p_seriousness, p_friendliness=p_friendliness,
-        p_rationality=p_rationality, p_slang=p_slang,
-        profile_image_url=profile_image_url,
-        image_prompt=image_prompt,
-        face_base_url=face_base_url,
-        feed_times=feed_times,
-        profile_details=profile_details,
-        daily_schedule=daily_schedule,
-        last_schedule_date=datetime.now(KST),
-        shared_memory=[], shared_journal=[], user_registry=[]
-    )
-    db.add(p)
-    db.commit()
-    db.refresh(p)
-    
-    # 모든 기존 유저에 대해 ChatRoom 생성
-    all_users = db.query(User).all()
-    for u in all_users:
-        room = ChatRoom(
-            owner_id=u.id, persona_id=p.id,
-            v_likeability=random.randint(20, 100),
-            v_erotic=random.randint(10, 40),
-            v_v_mood=random.randint(20, 100),
-            v_relationship=random.randint(20, 100)
-        )
-        db.add(room)
-    db.commit()
-    
-    return {
-        "id": p.id, "name": p.name, "age": p.age, "gender": p.gender,
-        "mbti": p.mbti, "profile_image_url": p.profile_image_url,
-        "face_base_url": p.face_base_url, "feed_times": p.feed_times
-    }
-
-
-async def run_batch_creation(job_id: str, count: int, white: int, black: int, asian: int):
-    """백그라운드 태스크: 7명씩 병렬 생성"""
-    BATCH_SIZE = 7
-    created = 0
-    
-    while created < count:
-        batch_size = min(BATCH_SIZE, count - created)
-        db = SessionLocal()
-        try:
-            tasks = [create_single_eve_for_batch(white, black, asian, db) for _ in range(batch_size)]
-            results = await asyncio.gather(*tasks, return_exceptions=True)
-            
-            for r in results:
-                if isinstance(r, Exception):
-                    batch_jobs[job_id]['failed'] += 1
-                    batch_jobs[job_id]['errors'].append(str(r)[:100])
-                    print(f"[BATCH] Eve creation failed: {r}")
-                else:
-                    batch_jobs[job_id]['created'] += 1
-                    batch_jobs[job_id]['eves'].append(r)
-                    created += 1
-        except Exception as e:
-            print(f"[BATCH] Batch error: {e}")
-            batch_jobs[job_id]['errors'].append(str(e)[:100])
-        finally:
-            db.close()
-        
-        # API rate limit 방지
-        if created < count:
-            await asyncio.sleep(3)
-    
-    batch_jobs[job_id]['done'] = True
-    print(f"[BATCH] Job {job_id} completed: {batch_jobs[job_id]['created']}/{count}")
-
-
-@app.post("/admin/batch-create-eves")
-async def admin_batch_create_eves(
-    req: BatchCreateRequest,
-    current_user: User = Depends(get_current_user)
-):
-    print(f"[DEBUG] User={current_user.username if current_user else 'None'}, Admin={current_user.is_admin if current_user else 'None'}")
-    if not current_user or not current_user.is_admin:
-        raise HTTPException(status_code=403, detail="Admin only")
-    
-    if req.count < 1 or req.count > 200:
-        raise HTTPException(status_code=400, detail="Count must be 1-200")
-    
-    job_id = f"batch_{int(datetime.now().timestamp())}"
-    batch_jobs[job_id] = {
-        "total": req.count,
-        "created": 0,
-        "failed": 0,
-        "errors": [],
-        "done": False,
-        "eves": []
-    }
-    
-    # 백그라운드 태스크로 실행
-    asyncio.create_task(run_batch_creation(job_id, req.count, req.white, req.black, req.asian))
-    
-    return {"job_id": job_id, "total": req.count}
-
-
-@app.get("/admin/batch-status/{job_id}")
-async def admin_batch_status(job_id: str, current_user: User = Depends(get_current_user)):
-    if not current_user or not current_user.is_admin:
-        raise HTTPException(status_code=403, detail="Admin only")
-    
-    job = batch_jobs.get(job_id)
-    if not job:
-        raise HTTPException(status_code=404, detail="Job not found")
-    
-    return job
 
 
 @app.get("/", response_class=HTMLResponse)
-
 async def get_ui():
     # [v1.6.0] 매 요청마다 타임스탬프 생성하여 정적 자원 강제 리로드
     import time
@@ -1941,4 +2955,4 @@ async def get_ui():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 5003)))
+    uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 8000)))
