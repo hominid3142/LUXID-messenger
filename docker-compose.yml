@@ -6,7 +6,7 @@ services:
     container_name: luxid_app
     restart: always
     ports:
-      - "5003:5003"
+      - "8000:8000"
     env_file:
       - .env
     environment:

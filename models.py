@@ -23,6 +23,7 @@ class User(Base):
                      gender = Column(String, nullable=True)  # 'male', 'female', 'other'
                      mbti = Column(String, nullable=True)
                      profile_image_url = Column(String, nullable=True)  # 업로드된 이미지 경로
+                     profile_images = Column(JSON, default=list)
                      profile_details = Column(JSON, nullable=True)  # 자기소개 상세 정보
                      
                      # [v1.5.0 추가] 사용자 설정
@@ -52,6 +53,7 @@ class Persona(Base):
                      p_slang = Column(Integer)
                      profile_image_url = Column(
                          String, nullable=True)  # AI 생성 프로필 이미지 URL 저장 필드 추가
+                     profile_images = Column(JSON, default=list)
                      image_prompt = Column(
                          String, nullable=True)  # [v1.9.2 추가] 이미지 생성에 사용된 프롬프트 저장
 
@@ -63,13 +65,13 @@ class Persona(Base):
 
                      last_schedule_date = Column(DateTime, nullable=True)  # [v2.0.0] 스케줄 생성 날짜
                      
+                     # [v3.6.0] Social System: 얼굴 베이스 및 피드 시간
+                     face_base_url = Column(String, nullable=True)
+                     feed_times = Column(JSON, default=[])
+                     
                      # [v2.0.0] World Map Location (현재 위치)
                      current_location_id = Column(Integer, ForeignKey("map_locations.id"), nullable=True)
                      current_location = relationship("MapLocation")
-
-                     # [v4.0.0] Social System
-                     face_base_url = Column(String, nullable=True)  # 얼굴 베이스 이미지 URL (i2i 파이프라인)
-                     feed_times = Column(JSON, default=[])           # ["11:00", "14:00", "17:00"]
 
                      # [v3.0.0] Unified Memory System
                      # 통합 기억 저장소: [{source_user_id, fact, is_public, timestamp}]
@@ -138,13 +140,21 @@ class SystemNotice(Base):
 class FeedPost(Base):
     __tablename__ = "feed_posts"
     id = Column(Integer, primary_key=True, index=True)
-    persona_id = Column(Integer, ForeignKey("personas.id"))
+    persona_id = Column(Integer, ForeignKey("personas.id"), nullable=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     content = Column(String)
+    tagged_persona_ids = Column(JSON, default=list)
+    tag_activity = Column(String, nullable=True)
     image_url = Column(String, nullable=True)
+    image_prompt = Column(String, nullable=True)
     like_count = Column(Integer, default=0)
+    liked_by_users = Column(JSON, default=list)  # [Phase 4] 유저 단위 좋아요 트래킹
     created_at = Column(DateTime, default=datetime.utcnow)
+    scheduled_at = Column(DateTime, nullable=True)
+    is_published = Column(Boolean, default=True)
 
     persona = relationship("Persona", backref="posts")
+    user = relationship("User", backref="posts")
     comments = relationship("FeedComment", back_populates="post", cascade="all, delete-orphan")
 
 
@@ -171,3 +181,36 @@ class MapLocation(Base):
     category = Column(String)  # 카테고리 (Work, Rest, Play, Home)
     description = Column(String) # 설명 (Vibe)
     image_url = Column(String, nullable=True) # 이미지 URL (옵션)
+
+# [v3.0.0] Eve Social Graph
+class EveRelationship(Base):
+    __tablename__ = "eve_relationships"
+    id = Column(Integer, primary_key=True, index=True)
+    persona_a_id = Column(Integer, ForeignKey("personas.id"))
+    persona_b_id = Column(Integer, ForeignKey("personas.id"))
+    relationship_type = Column(String, default="지인")   # 지인 → 친구
+    interaction_count = Column(Integer, default=0)       # 피드 상호작용 횟수
+    shared_facts = Column(JSON, default=list)            # 서로 아는 사실 (최대 10개)
+    conversation_summaries = Column(JSON, default=list)  # 대화 요약 (최대 20개)
+    last_talked = Column(DateTime, nullable=True)
+
+    persona_a = relationship("Persona", foreign_keys=[persona_a_id])
+    persona_b = relationship("Persona", foreign_keys=[persona_b_id])
+
+
+class ScheduledAction(Base):
+    __tablename__ = "scheduled_actions"
+    id = Column(Integer, primary_key=True, index=True)
+    run_at = Column(DateTime, index=True)
+    action_type = Column(String, index=True)  # post | comment
+    persona_id = Column(Integer, ForeignKey("personas.id"), index=True)
+    target_post_id = Column(Integer, ForeignKey("feed_posts.id"), nullable=True, index=True)
+    plan_meta = Column(JSON, default=dict)
+    status = Column(String, default="scheduled", index=True)  # scheduled | running | done | failed
+    attempts = Column(Integer, default=0)
+    error = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    executed_at = Column(DateTime, nullable=True)
+
+    persona = relationship("Persona")
+    target_post = relationship("FeedPost")

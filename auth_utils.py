@@ -8,10 +8,11 @@ from models import User
 
 # 1. 보안 설정
 # Replit Secrets(환경 변수)에서 비밀키를 가져옵니다. 없을 경우 기본값을 사용하지만 런칭 시 반드시 설정 필요합니다.
-SECRET_KEY = os.environ.get("JWT_SECRET_KEY",
-                            "eve_messenger_secret_key_951004")
+SECRET_KEY = os.environ.get("JWT_SECRET_KEY") or os.environ.get("SECRET_KEY")
+if not SECRET_KEY:
+    raise RuntimeError("JWT secret is not configured. Set JWT_SECRET_KEY (or SECRET_KEY).")
 ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 30  # 베타 테스트 편의를 위해 토큰 유효 기간을 30일로 길게 설정
+ACCESS_TOKEN_EXPIRE_MINUTES = int(os.environ.get("ACCESS_TOKEN_EXPIRE_MINUTES", "720"))
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:

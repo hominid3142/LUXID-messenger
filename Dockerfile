@@ -16,7 +16,7 @@ RUN pip install --no-cache-dir --only-binary :all: -r requirements.txt || pip in
 COPY . .
 
 # Expose the application port
-EXPOSE 5003
+EXPOSE 8000
 
 # Command to run the application using uvicorn
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "5003"]
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]

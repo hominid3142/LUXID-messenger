@@ -99,10 +99,22 @@ DIA_CATEGORIES = ["SCHEDULE", "FACTS", "SHARED_MEMORY", "USER_REGISTRY", "PROFIL
 def tick_info_slots(v_state):
     """매 틱마다 호출하여 활성 슬롯의 TTL을 감소시키고, 만료된 슬롯을 제거합니다."""
     slots = v_state.get('active_info_slots', {})
+    if not isinstance(slots, dict):
+        v_state['active_info_slots'] = {}
+        return
+
     expired = []
     for cat, slot in slots.items():
-        slot['ttl'] -= 1
-        if slot['ttl'] <= 0:
+        if not isinstance(slot, dict):
+            expired.append(cat)
+            continue
+        try:
+            ttl = int(slot.get('ttl', 0))
+        except (TypeError, ValueError):
+            ttl = 0
+        ttl -= 1
+        slot['ttl'] = ttl
+        if ttl <= 0:
             expired.append(cat)
     for cat in expired:
         del slots[cat]
@@ -116,6 +128,8 @@ def build_dynamic_context(v_state, p_dict, persona=None, current_user_id=None):
     import json
     schedule_context = get_schedule_context_for_dia(p_dict.get('daily_schedule', {}))
     slots = v_state.get('active_info_slots', {})
+    if not isinstance(slots, dict):
+        slots = {}
     
     parts = []
     
@@ -156,14 +170,9 @@ def build_dynamic_context(v_state, p_dict, persona=None, current_user_id=None):
     if "PROFILE" in slots:
         pd = p_dict.get('profile_details', {})
         if pd:
-            profile_parts = []
-            if pd.get('hook'): profile_parts.append(f"어필: {pd['hook']}")
-            if pd.get('intro'): profile_parts.append(f"소개: {pd['intro']}")
-            if pd.get('interests'): profile_parts.append(f"관심사: {pd['interests']}")
-            if pd.get('job'): profile_parts.append(f"직업: {pd['job']}")
-            if pd.get('tmi'): profile_parts.append(f"TMI: {pd['tmi']}")
-            if profile_parts:
-                parts.append(f"[프로필] {', '.join(profile_parts)}")
+            hook = str(pd.get('hook', '')).strip()
+            if hook:
+                parts.append(f"[프로필] 어필: {hook}")
     
     # 활성 슬롯 현황 (디버그용, 발화봇에는 보이지 않지만 로그 추적 가능)
     active_names = list(slots.keys())
