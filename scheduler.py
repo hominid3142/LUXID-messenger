@@ -4,7 +4,7 @@ import os
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from database import SessionLocal
-from models import ChatRoom, User, Persona, FeedPost, FeedComment, ScheduledAction, EveRelationship
+from models import ChatRoom, User, Persona, FeedPost, FeedComment, ScheduledAction, EveRelationship, UserPersonaRelationship, MapLocation
 from sqlalchemy import desc, or_
 from sqlalchemy.orm import Session
 from datetime import datetime, timedelta
@@ -12,6 +12,11 @@ import random
 import engine
 import fal_client
 from memory import KST, volatile_memory, update_shared_memory
+try:
+    from location_planner import compute_hourly_location_plan, planned_location_id_for_datetime
+except Exception:
+    compute_hourly_location_plan = None
+    planned_location_id_for_datetime = None
 
 
 def _build_ethnicity_prompt(white: int, black: int, asian: int) -> str:
@@ -42,6 +47,607 @@ class AEScheduler:
         self.hourly_comment_max = int(os.environ.get("HOURLY_COMMENT_MAX", "22"))
         self.nightly_gallery_add_limit = int(os.environ.get("NIGHTLY_EVE_PHOTO_ADDS", "10"))
         self.max_profile_photos = 3
+
+    def _clamp_0_100(self, value: int) -> int:
+        return max(0, min(100, int(value)))
+
+    def _sync_persona_locations_for_hour(self, db: Session, personas: list[Persona], now: datetime) -> int:
+        if not personas:
+            return 0
+        all_locations = db.query(MapLocation).all()
+        if not all_locations:
+            return 0
+
+        all_ids = sorted([int(loc.id) for loc in all_locations if getattr(loc, "id", None) is not None])
+        if not all_ids:
+            return 0
+
+        date_key = now.strftime("%Y-%m-%d")
+        hour_key = f"{now.hour:02d}"
+        updated = 0
+
+        for persona in personas:
+            slots: dict = {}
+            pd = dict(persona.profile_details or {})
+            plan_block = pd.get("hourly_location_plan") if isinstance(pd.get("hourly_location_plan"), dict) else {}
+
+            if (
+                compute_hourly_location_plan
+                and (
+                    not plan_block
+                    or str(plan_block.get("date") or "") != date_key
+                    or not isinstance(plan_block.get("slots"), dict)
+                )
+            ):
+                try:
+                    fresh_slots = compute_hourly_location_plan(
+                        persona_id=persona.id,
+                        daily_schedule=persona.daily_schedule,
+                        locations=all_locations,
+                        when=now,
+                    )
+                except Exception:
+                    fresh_slots = {}
+                if fresh_slots:
+                    slots = dict(fresh_slots)
+                    pd["hourly_location_plan"] = {
+                        "date": date_key,
+                        "slots": slots,
+                    }
+                    persona.profile_details = pd
+            elif isinstance(plan_block.get("slots"), dict):
+                slots = dict(plan_block.get("slots") or {})
+
+            target_location_id = slots.get(hour_key) or slots.get("00")
+            if not target_location_id:
+                target_location_id = all_ids[(int(persona.id) + now.hour) % len(all_ids)]
+            try:
+                target_location_id = int(target_location_id)
+            except Exception:
+                target_location_id = all_ids[0]
+
+            if persona.current_location_id != target_location_id:
+                persona.current_location_id = target_location_id
+                updated += 1
+
+        return updated
+
+    def _resolve_persona_location_for_time(
+        self,
+        db: Session,
+        persona: Persona,
+        when: datetime,
+        all_locations: list[MapLocation] | None = None,
+    ) -> tuple[int | None, str | None, str | None]:
+        locations = all_locations if all_locations is not None else db.query(MapLocation).all()
+        if not locations:
+            return None, None, None
+
+        loc_map = {}
+        all_ids = []
+        for loc in locations:
+            try:
+                lid = int(loc.id)
+            except Exception:
+                continue
+            loc_map[lid] = loc
+            all_ids.append(lid)
+        if not all_ids:
+            return None, None, None
+
+        location_id = None
+        if planned_location_id_for_datetime:
+            try:
+                location_id = planned_location_id_for_datetime(
+                    persona_id=persona.id,
+                    daily_schedule=persona.daily_schedule,
+                    locations=locations,
+                    when=when,
+                )
+            except Exception:
+                location_id = None
+
+        if not location_id:
+            location_id = persona.current_location_id
+        if not location_id:
+            location_id = all_ids[(int(persona.id) + int(when.hour)) % len(all_ids)]
+
+        try:
+            location_id = int(location_id)
+        except Exception:
+            location_id = all_ids[0]
+
+        loc = loc_map.get(location_id)
+        if not loc:
+            loc = loc_map.get(all_ids[0])
+            location_id = all_ids[0]
+        return (
+            location_id,
+            str(getattr(loc, "name", "") or "").strip() or None,
+            str(getattr(loc, "district", "") or "").strip() or None,
+        )
+
+    def _apply_feed_activity_state_delta(self, db: Session, persona_id: int) -> tuple[int, int]:
+        delta_erotic = random.randint(-10, 10)
+        delta_mood = random.randint(-10, 10)
+
+        rooms = db.query(ChatRoom).filter(ChatRoom.persona_id == persona_id).all()
+        for room in rooms:
+            room.v_erotic = self._clamp_0_100((room.v_erotic or 0) + delta_erotic)
+            room.v_v_mood = self._clamp_0_100((room.v_v_mood or 0) + delta_mood)
+            vs = volatile_memory.get(room.id)
+            if isinstance(vs, dict):
+                vs["v_erotic"] = room.v_erotic
+                vs["v_v_mood"] = room.v_v_mood
+
+        pairs = db.query(UserPersonaRelationship).filter(
+            UserPersonaRelationship.persona_id == persona_id
+        ).all()
+        for pair in pairs:
+            pair.erotic = self._clamp_0_100((pair.erotic or 0) + delta_erotic)
+            pair.mood = self._clamp_0_100((pair.mood or 0) + delta_mood)
+            pair.updated_at = datetime.utcnow()
+
+        return delta_erotic, delta_mood
+
+    def _coerce_msg_dt(self, value: str, now: datetime) -> datetime | None:
+        if not value:
+            return None
+        v = str(value).strip()
+        if not v:
+            return None
+        patterns = [
+            "%Y-%m-%d %H:%M:%S",
+            "%Y-%m-%d %H:%M",
+            "%Y/%m/%d %H:%M:%S",
+            "%Y/%m/%d %H:%M",
+            "%H:%M:%S",
+            "%H:%M",
+            "%I:%M:%S %p",
+            "%I:%M %p",
+        ]
+        for pat in patterns:
+            try:
+                parsed = datetime.strptime(v, pat)
+            except Exception:
+                continue
+            if pat.startswith("%Y"):
+                return parsed.replace(tzinfo=KST)
+            candidate = now.replace(hour=parsed.hour, minute=parsed.minute, second=parsed.second, microsecond=0)
+            if candidate > now + timedelta(minutes=5):
+                candidate = candidate - timedelta(days=1)
+            return candidate
+        return None
+
+    def _extract_recent_dialogue_12h(self, room: ChatRoom, now: datetime, limit: int = 36) -> list[dict]:
+        history = list(room.history or [])
+        if not history:
+            return []
+        cutoff = now - timedelta(hours=12)
+        picked = []
+        for msg in history[-120:]:
+            if not isinstance(msg, dict):
+                continue
+            role = str(msg.get("role") or "").strip().lower()
+            if role not in ("user", "assistant"):
+                continue
+            text = str(msg.get("content") or "").strip()
+            if not text:
+                continue
+            raw_ts = msg.get("timestamp") or msg.get("ts") or msg.get("time") or ""
+            dt = self._coerce_msg_dt(raw_ts, now)
+            if dt is not None and dt < cutoff:
+                continue
+            picked.append({
+                "role": "user" if role == "user" else "eve",
+                "text": text[:280],
+                "ts": str(raw_ts)[:32],
+            })
+        if not picked:
+            for msg in history[-30:]:
+                if not isinstance(msg, dict):
+                    continue
+                role = str(msg.get("role") or "").strip().lower()
+                if role not in ("user", "assistant"):
+                    continue
+                text = str(msg.get("content") or "").strip()
+                if not text:
+                    continue
+                picked.append({
+                    "role": "user" if role == "user" else "eve",
+                    "text": text[:280],
+                    "ts": str(msg.get("timestamp") or msg.get("ts") or "")[:32],
+                })
+        return picked[-limit:]
+
+    def _extract_medium_summaries(self, room: ChatRoom, persona: Persona, user_id: int, limit: int = 10) -> list[str]:
+        summaries = []
+        state = volatile_memory.get(room.id) or {}
+        for item in list(state.get("medium_term_logs", []) or []):
+            txt = str(item or "").strip()
+            if txt:
+                summaries.append(txt)
+
+        for entry in list(persona.shared_memory or []):
+            if not isinstance(entry, dict):
+                continue
+            if entry.get("category") != "conversation":
+                continue
+            src_uid = entry.get("source_user_id")
+            if src_uid not in (None, user_id):
+                continue
+            txt = str(entry.get("fact") or "").strip()
+            if txt:
+                summaries.append(txt)
+
+        dedup = []
+        seen = set()
+        for s in summaries:
+            key = s.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            dedup.append(s)
+        return dedup[-limit:]
+
+    def _upsert_user_pair_relationship(
+        self,
+        db: Session,
+        room: ChatRoom,
+        category: str,
+        summary_3line: str,
+        delta: int,
+        now: datetime,
+    ) -> UserPersonaRelationship:
+        pair = db.query(UserPersonaRelationship).filter(
+            UserPersonaRelationship.user_id == room.owner_id,
+            UserPersonaRelationship.persona_id == room.persona_id
+        ).first()
+        if not pair:
+            pair = UserPersonaRelationship(
+                user_id=room.owner_id,
+                persona_id=room.persona_id,
+            )
+            db.add(pair)
+
+        current_score = pair.relationship_score if pair.relationship_score is not None else (room.v_relationship or 20)
+        next_score = max(0, min(100, int(current_score) + int(delta)))
+
+        pair.relationship_category = category or "낯선 사람"
+        pair.relationship_score = next_score
+        pair.likeability = room.v_likeability if room.v_likeability is not None else (pair.likeability or 50)
+        pair.erotic = room.v_erotic if room.v_erotic is not None else (pair.erotic or 30)
+        pair.mood = room.v_v_mood if room.v_v_mood is not None else (pair.mood or 50)
+        pair.relationship_summary_3line = summary_3line[:500] if summary_3line else None
+        pair.relationship_last_defined_at = now
+        pair.updated_at = datetime.utcnow()
+
+        room.relationship_category = pair.relationship_category
+        room.v_relationship = next_score
+        room.relationship_summary_3line = pair.relationship_summary_3line
+        room.relationship_last_defined_at = now
+        return pair
+
+    async def _resolve_romance_for_persona(
+        self,
+        db: Session,
+        persona: Persona,
+        room_contexts: list[dict],
+        now: datetime,
+    ) -> dict:
+        if not room_contexts:
+            return {"mode": "noop", "selected_user_id": None}
+
+        def _score_of(ctx: dict) -> int:
+            pair = ctx.get("pair")
+            room = ctx.get("room")
+            if pair and pair.relationship_score is not None:
+                return int(pair.relationship_score)
+            if room and room.v_relationship is not None:
+                return int(room.v_relationship)
+            return 20
+
+        # Normalize broken states: keep at most one current partner.
+        couples = []
+        for ctx in room_contexts:
+            pair = ctx.get("pair")
+            room = ctx.get("room")
+            is_couple = bool(
+                (pair and str(pair.romance_state or "") == "커플")
+                or (room and str(getattr(room, "romance_state", "") or "") == "커플")
+            )
+            if is_couple:
+                couples.append(ctx)
+        if len(couples) > 1:
+            keep = sorted(couples, key=_score_of, reverse=True)[0]
+            keep_uid = keep["owner"].id
+            for ctx in couples:
+                if ctx["owner"].id == keep_uid:
+                    continue
+                pair = ctx.get("pair")
+                room = ctx.get("room")
+                if pair:
+                    pair.romance_state = "싱글"
+                    pair.romance_partner_label = None
+                    pair.updated_at = datetime.utcnow()
+                if room:
+                    room.romance_state = "싱글"
+                    room.romance_partner_label = None
+                    room.romance_decided_at = now
+
+        current_partner_user_id = None
+        for ctx in room_contexts:
+            pair = ctx.get("pair")
+            room = ctx.get("room")
+            is_couple = bool(
+                (pair and str(pair.romance_state or "") == "커플")
+                or (room and str(getattr(room, "romance_state", "") or "") == "커플")
+            )
+            if is_couple:
+                current_partner_user_id = ctx["owner"].id
+                break
+
+        pending_candidates = []
+        for ctx in room_contexts:
+            pair = ctx.get("pair")
+            room = ctx.get("room")
+            owner = ctx.get("owner")
+            if not owner:
+                continue
+            pair_conf_pending = bool(pair and pair.confession_pending)
+            room_conf_pending = bool(room and getattr(room, "confession_pending", False))
+            fact_tail = list(ctx.get("fact_warehouse") or [])[-30:]
+            confession_facts = [str(x) for x in fact_tail if isinstance(x, str) and "고백받음" in x]
+            confession_candidates = []
+            if pair and isinstance(pair.confession_candidates, list):
+                confession_candidates = list(pair.confession_candidates)
+            elif room and isinstance(getattr(room, "confession_candidates", None), list):
+                confession_candidates = list(room.confession_candidates)
+
+            if not (pair_conf_pending or room_conf_pending or confession_facts):
+                continue
+            if not confession_candidates and confession_facts:
+                confession_candidates = [
+                    {
+                        "user_id": owner.id,
+                        "user_name": owner.display_name or owner.username,
+                        "at": now.strftime("%Y-%m-%d %H:%M"),
+                        "message": confession_facts[-1][:180],
+                    }
+                ]
+            if not confession_candidates:
+                continue
+
+            pending_candidates.append(
+                {
+                    "user_id": owner.id,
+                    "user_name": owner.display_name or owner.username,
+                    "relationship_category": (pair.relationship_category if pair else room.relationship_category) or "낯선 사람",
+                    "relationship_score": _score_of(ctx),
+                    "summary_3line": (pair.relationship_summary_3line if pair else room.relationship_summary_3line) or "",
+                    "recent_dialogue_12h": list(ctx.get("recent_12h") or []),
+                    "confession_candidates": confession_candidates[-8:],
+                    "fact_warehouse_tail": fact_tail[-20:],
+                }
+            )
+
+        if pending_candidates:
+            decision = await engine.decide_romance_outcome(
+                persona_payload={
+                    "persona_id": persona.id,
+                    "name": persona.name,
+                    "mbti": persona.mbti,
+                    "profile_details": persona.profile_details or {},
+                },
+                pending_candidates=pending_candidates,
+                current_partner_user_id=current_partner_user_id,
+            )
+            decision_type = str(decision.get("decision") or "reject_all").strip().lower()
+            selected_user_id = decision.get("selected_user_id")
+            if decision_type != "accept_one":
+                selected_user_id = None
+
+            for ctx in room_contexts:
+                pair = ctx.get("pair")
+                room = ctx.get("room")
+                owner = ctx.get("owner")
+                if not owner:
+                    continue
+                is_selected = selected_user_id is not None and owner.id == int(selected_user_id)
+                partner_label = (owner.display_name or owner.username) if is_selected else None
+
+                if pair:
+                    pair.romance_state = "커플" if is_selected else "싱글"
+                    pair.romance_partner_label = partner_label
+                    pair.confession_pending = False
+                    pair.confession_received_at = None
+                    pair.confession_candidates = []
+                    pair.updated_at = datetime.utcnow()
+                if room:
+                    room.romance_state = "커플" if is_selected else "싱글"
+                    room.romance_partner_label = partner_label
+                    room.confession_pending = False
+                    room.confession_received_at = None
+                    room.confession_candidates = []
+                    room.romance_decided_at = now
+
+            return {
+                "mode": "confession_resolution",
+                "decision": decision_type,
+                "selected_user_id": selected_user_id,
+            }
+
+        # No pending confession: evaluate breakup health for current couple.
+        breakup_ids = []
+        for ctx in room_contexts:
+            pair = ctx.get("pair")
+            room = ctx.get("room")
+            owner = ctx.get("owner")
+            if not owner:
+                continue
+            is_couple = bool(
+                (pair and str(pair.romance_state or "") == "커플")
+                or (room and str(getattr(room, "romance_state", "") or "") == "커플")
+            )
+            if not is_couple:
+                continue
+            rel_score = _score_of(ctx)
+            talk_count = len(ctx.get("recent_12h") or [])
+            should_breakup = rel_score <= 25 or (rel_score <= 40 and talk_count < 2)
+            if not should_breakup:
+                continue
+            breakup_ids.append(owner.id)
+            if pair:
+                pair.romance_state = "싱글"
+                pair.romance_partner_label = None
+                pair.updated_at = datetime.utcnow()
+            if room:
+                room.romance_state = "싱글"
+                room.romance_partner_label = None
+                room.romance_decided_at = now
+
+        if breakup_ids:
+            return {
+                "mode": "breakup",
+                "selected_user_id": None,
+                "breakup_user_ids": breakup_ids,
+            }
+        return {"mode": "noop", "selected_user_id": current_partner_user_id}
+
+    async def _run_relationship_review(self, run_label: str, write_diary: bool = False) -> tuple[int, int]:
+        db = SessionLocal()
+        persona_count = 0
+        rel_updates = 0
+        try:
+            now = datetime.now(KST)
+            personas = db.query(Persona).all()
+
+            for persona in personas:
+                rooms = db.query(ChatRoom).filter(ChatRoom.persona_id == persona.id).all()
+                if not rooms:
+                    continue
+
+                per_user_contexts = []
+                room_contexts = []
+                registry_map = {
+                    e.get("user_id"): e
+                    for e in (persona.user_registry or [])
+                    if isinstance(e, dict) and e.get("user_id") is not None
+                }
+
+                for room in rooms:
+                    owner = room.owner or db.query(User).filter(User.id == room.owner_id).first()
+                    if not owner:
+                        continue
+
+                    recent_12h = self._extract_recent_dialogue_12h(room, now, limit=36)
+                    medium_summaries = self._extract_medium_summaries(room, persona, owner.id, limit=10)
+                    fact_warehouse = list(room.fact_warehouse or [])[-30:]
+
+                    persona_payload = {
+                        "persona_traits": engine.build_persona_traits(persona),
+                    }
+                    user_payload = {
+                        "username": owner.username,
+                        "display_name": owner.display_name or owner.username,
+                    }
+                    context_payload = {
+                        "current_relationship": room.relationship_category or "낯선 사람",
+                        "existing_summary_3line": getattr(room, "relationship_summary_3line", "") or "",
+                        "recent_dialogue_12h": recent_12h,
+                        "medium_summaries": medium_summaries,
+                        "fact_warehouse": fact_warehouse,
+                    }
+
+                    review = await engine.evaluate_user_relationship_snapshot(
+                        persona_payload=persona_payload,
+                        user_payload=user_payload,
+                        context_payload=context_payload,
+                    )
+
+                    category = str(review.get("relationship_category") or "낯선 사람").strip()
+                    summary_3line = str(review.get("summary_3line") or "").strip()
+                    delta = int(review.get("relationship_score_delta", 0))
+                    delta = max(-10, min(10, delta))
+
+                    pair = self._upsert_user_pair_relationship(
+                        db=db,
+                        room=room,
+                        category=category,
+                        summary_3line=summary_3line,
+                        delta=delta,
+                        now=now,
+                    )
+                    rel_updates += 1
+
+                    reg = registry_map.get(owner.id) or {
+                        "user_id": owner.id,
+                        "display_name": owner.display_name or owner.username,
+                        "relationship": "낯선 사람",
+                        "last_talked": None,
+                        "memo": "",
+                    }
+                    reg["relationship"] = category
+                    reg["memo"] = summary_3line[:300]
+                    registry_map[owner.id] = reg
+
+                    per_user_contexts.append({
+                        "user_id": owner.id,
+                        "user_name": owner.display_name or owner.username,
+                        "relationship": category,
+                        "relationship_score": int(pair.relationship_score if pair and pair.relationship_score is not None else (room.v_relationship or 20)),
+                        "summary_3line": summary_3line,
+                        "romance_state": (pair.romance_state if pair else room.romance_state) or "싱글",
+                        "romance_partner_label": (pair.romance_partner_label if pair else room.romance_partner_label),
+                        "confession_pending": bool((pair.confession_pending if pair else room.confession_pending)),
+                        "confession_candidates": list((pair.confession_candidates if pair else room.confession_candidates) or [])[-8:],
+                        "recent_dialogue_12h": recent_12h,
+                        "medium_summaries": medium_summaries,
+                        "fact_warehouse": fact_warehouse,
+                    })
+                    room_contexts.append({
+                        "room": room,
+                        "owner": owner,
+                        "pair": pair,
+                        "recent_12h": recent_12h,
+                        "medium_summaries": medium_summaries,
+                        "fact_warehouse": fact_warehouse,
+                    })
+
+                persona.user_registry = list(registry_map.values())
+
+                if write_diary:
+                    await self._resolve_romance_for_persona(
+                        db=db,
+                        persona=persona,
+                        room_contexts=room_contexts,
+                        now=now,
+                    )
+
+                db.commit()
+                persona_count += 1
+                await asyncio.sleep(0.15)
+
+            print(f">> RELATIONSHIP_REVIEW[{run_label}]: personas={persona_count}, updates={rel_updates}, midnight_finalize={write_diary}")
+            return persona_count, rel_updates
+        except Exception as e:
+            db.rollback()
+            print(f"relationship review error[{run_label}]: {e}")
+            return persona_count, rel_updates
+        finally:
+            db.close()
+
+    async def noon_relationship_job(self):
+        await self._run_relationship_review(run_label="12:00", write_diary=False)
+
+    async def midnight_relationship_job(self):
+        db = SessionLocal()
+        try:
+            gallery_added = await self._nightly_gallery_fill(db)
+            print(f">> MIDNIGHT: nightly gallery added={gallery_added}")
+        finally:
+            db.close()
+        await self._run_relationship_review(run_label="00:00", write_diary=True)
 
     def _normalize_persona_gallery(self, persona: Persona) -> list[dict]:
         raw = persona.profile_images if isinstance(persona.profile_images, list) else []
@@ -329,11 +935,24 @@ class AEScheduler:
         db = SessionLocal()
         try:
             now = datetime.now(KST)
+            all_locations = db.query(MapLocation).all()
             posts = db.query(FeedPost).filter(
                 FeedPost.is_published == False,
                 FeedPost.scheduled_at <= now
             ).all()
             for post in posts:
+                if post.persona_id and not (post.location_name or post.location_district):
+                    persona = db.query(Persona).filter(Persona.id == post.persona_id).first()
+                    if persona:
+                        location_id, location_name, location_district = self._resolve_persona_location_for_time(
+                            db=db,
+                            persona=persona,
+                            when=now,
+                            all_locations=all_locations,
+                        )
+                        post.location_id = location_id
+                        post.location_name = location_name
+                        post.location_district = location_district
                 post.is_published = True
                 print(f">> FEED: Published scheduled post {post.id} by persona {post.persona_id}")
             db.commit()
@@ -689,6 +1308,7 @@ class AEScheduler:
         persona = db.query(Persona).filter(Persona.id == persona_id).first()
         if not persona:
             return count
+        all_locations = db.query(MapLocation).all()
 
         content = act.get("content", "")
         target_post_id = act.get("target_post_id")
@@ -735,17 +1355,28 @@ class AEScheduler:
                 )
                 image_url = await engine.generate_feed_image_t2i(ethnicity_prompt, persona.gender, persona.age, image_prompt)
 
+            location_id, location_name, location_district = self._resolve_persona_location_for_time(
+                db=db,
+                persona=persona,
+                when=scheduled_at,
+                all_locations=all_locations,
+            )
+
             new_post = FeedPost(
                 persona_id=persona_id,
                 content=content,
                 tagged_persona_ids=tagged_persona_ids,
                 tag_activity=tag_activity[:120] if tag_activity else None,
+                location_id=location_id,
+                location_name=location_name,
+                location_district=location_district,
                 image_url=image_url,
                 image_prompt=image_prompt if generate_image else None,
                 scheduled_at=scheduled_at,
                 is_published=False
             )
             db.add(new_post)
+            self._apply_feed_activity_state_delta(db, persona_id)
             print(f"   [POST] {persona.name}: (delay {delay_minutes}m) {_safe_log_text(content)}...")
             count += 1
 
@@ -773,12 +1404,47 @@ class AEScheduler:
             if not content:
                 return count
 
+            if target_post.user_id:
+                target_user = db.query(User).filter(User.id == target_post.user_id).first()
+                if target_user:
+                    pair = db.query(UserPersonaRelationship).filter(
+                        UserPersonaRelationship.user_id == target_user.id,
+                        UserPersonaRelationship.persona_id == persona_id
+                    ).first()
+                    rel_category = str((pair.relationship_category if pair else None) or "낯선 사람")
+                    rel_score = int((pair.relationship_score if pair and pair.relationship_score is not None else 20))
+                    rewritten = await engine.generate_relationship_aware_feed_comment(
+                        persona_payload={
+                            "persona_traits": engine.build_persona_traits(persona),
+                        },
+                        user_payload={
+                            "id": target_user.id,
+                            "name": target_user.display_name or target_user.username,
+                            "profile_details": target_user.profile_details or {},
+                        },
+                        post_payload={
+                            "id": target_post.id,
+                            "content": str(target_post.content or ""),
+                            "created_at": target_post.created_at.strftime("%Y-%m-%d %H:%M") if target_post.created_at else "",
+                            "image_url": getattr(target_post, "image_url", None),
+                            "image_prompt": str(getattr(target_post, "image_prompt", "") or ""),
+                        },
+                        relationship_payload={
+                            "category": rel_category,
+                            "score": rel_score,
+                        },
+                        draft_comment=str(content or ""),
+                    )
+                    if rewritten:
+                        content = rewritten
+
             new_comment = FeedComment(
                 post_id=target_post_id,
                 persona_id=persona_id,
                 content=content
             )
             db.add(new_comment)
+            self._apply_feed_activity_state_delta(db, persona_id)
             print(f"   [COMMENT] {persona.name} -> Post {target_post_id}: {_safe_log_text(content)}...")
 
         return count
@@ -811,8 +1477,12 @@ class AEScheduler:
             if not p_a or not p_b:
                 continue
                 
-            persona_a_dict = {"id": p_a.id, "name": p_a.name, "mbti": p_a.mbti, "interests": (p_a.profile_details or {}).get("interests", [])}
-            persona_b_dict = {"id": p_b.id, "name": p_b.name, "mbti": p_b.mbti, "interests": (p_b.profile_details or {}).get("interests", [])}
+            persona_a_dict = {
+                "persona_traits": engine.build_persona_traits(p_a),
+            }
+            persona_b_dict = {
+                "persona_traits": engine.build_persona_traits(p_b),
+            }
             
             result = await engine.simulate_eve_conversation_summary(persona_a_dict, persona_b_dict, rel, db)
             
@@ -866,6 +1536,11 @@ class AEScheduler:
         try:
             now = datetime.now(KST)
             current_hour = now.strftime("%H:00")
+            all_personas = db.query(Persona).all()
+            moved_count = self._sync_persona_locations_for_hour(db, all_personas, now)
+            if moved_count:
+                db.commit()
+                print(f">> MAP: hourly location sync moved={moved_count} at {current_hour}")
 
             if self.use_hourly_planner:
                 post_budget, comment_budget, planned_count = await self._plan_hourly_actions(db, now)
@@ -878,8 +1553,7 @@ class AEScheduler:
                     f"(posts={post_budget}, comments={comment_budget}, queued={planned_count}, dm={dm_sent})"
                 )
                 return
-             
-            all_personas = db.query(Persona).all()
+
             # [Phase 4] feed_times에 현재 시간이 포함되거나, 15% 확률로 돌발 피드 생성 (활성도 증가)
             active_eves = [p for p in all_personas if (p.feed_times and current_hour in p.feed_times) or (random.random() < 0.15)]
             
@@ -945,8 +1619,9 @@ class AEScheduler:
             db.close()
 
     def start(self):
-        # 매일 자정 (00:00 KST) 실행 - 보호 주기로 변경 고민 (Phase 1/2에서는 그대로 유지)
-        self.scheduler.add_job(self.daily_briefing_job, CronTrigger(hour=0, minute=0, timezone=KST))
+        # 관계 정의 스냅샷: 정오/자정
+        self.scheduler.add_job(self.noon_relationship_job, CronTrigger(hour=12, minute=0, timezone=KST))
+        self.scheduler.add_job(self.midnight_relationship_job, CronTrigger(hour=0, minute=0, timezone=KST))
         
         # [Phase 2] 매시 정각: 피드 활동 생성
         self.scheduler.add_job(self.hourly_feed_job, CronTrigger(minute=0, timezone=KST))
@@ -958,4 +1633,4 @@ class AEScheduler:
         
         self.scheduler.start()
         mode = "hourly-planner" if self.use_hourly_planner else "legacy-feed-times"
-        print(f">> SCHEDULER: Started (mode={mode}, Next run at 00:00 KST, with hourly feed generation)")
+        print(f">> SCHEDULER: Started (mode={mode}, relationship checkpoints at 12:00/00:00 KST)")

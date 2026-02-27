@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, JSON, ForeignKey, Boolean, DateTime
+from sqlalchemy import Column, Integer, String, JSON, ForeignKey, Boolean, DateTime, UniqueConstraint
 from sqlalchemy.orm import relationship
 from database import Base
 from datetime import datetime
@@ -110,9 +110,47 @@ class ChatRoom(Base):
                      
                      # [v1.5.0 추가] 이브가 느끼는 사용자와의 관계
                      relationship_category = Column(String, default="낯선 사람")
+                     relationship_last_defined_at = Column(DateTime, nullable=True)
+                     relationship_summary_3line = Column(String, nullable=True)
+                     romance_state = Column(String, default="싱글")
+                     romance_partner_label = Column(String, nullable=True)
+                     confession_pending = Column(Boolean, default=False)
+                     confession_received_at = Column(DateTime, nullable=True)
+                     confession_candidates = Column(JSON, default=list)
+                     romance_decided_at = Column(DateTime, nullable=True)
+                     fact_timeline = Column(JSON, default=list)
 
                      owner = relationship("User", back_populates="rooms")
                      persona = relationship("Persona", back_populates="rooms")
+
+
+class UserPersonaRelationship(Base):
+    __tablename__ = "user_persona_relationships"
+    __table_args__ = (UniqueConstraint("user_id", "persona_id", name="uq_user_persona_relationship"),)
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    persona_id = Column(Integer, ForeignKey("personas.id"), nullable=False, index=True)
+
+    relationship_category = Column(String, default="낯선 사람")
+    relationship_score = Column(Integer, default=20)
+    likeability = Column(Integer, default=50)
+    erotic = Column(Integer, default=30)
+    mood = Column(Integer, default=50)
+    relationship_last_defined_at = Column(DateTime, nullable=True)
+    relationship_summary_3line = Column(String, nullable=True)
+
+    romance_state = Column(String, default="싱글")
+    romance_partner_label = Column(String, nullable=True)
+    confession_pending = Column(Boolean, default=False)
+    confession_received_at = Column(DateTime, nullable=True)
+    confession_candidates = Column(JSON, default=list)
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow)
+
+    user = relationship("User")
+    persona = relationship("Persona")
 
 
 # [v1.4.0 신규] 프롬프트 관리 시스템
@@ -145,6 +183,9 @@ class FeedPost(Base):
     content = Column(String)
     tagged_persona_ids = Column(JSON, default=list)
     tag_activity = Column(String, nullable=True)
+    location_id = Column(Integer, ForeignKey("map_locations.id"), nullable=True)
+    location_name = Column(String, nullable=True)
+    location_district = Column(String, nullable=True)
     image_url = Column(String, nullable=True)
     image_prompt = Column(String, nullable=True)
     like_count = Column(Integer, default=0)
@@ -155,6 +196,7 @@ class FeedPost(Base):
 
     persona = relationship("Persona", backref="posts")
     user = relationship("User", backref="posts")
+    location = relationship("MapLocation")
     comments = relationship("FeedComment", back_populates="post", cascade="all, delete-orphan")
 
 
@@ -189,10 +231,13 @@ class EveRelationship(Base):
     persona_a_id = Column(Integer, ForeignKey("personas.id"))
     persona_b_id = Column(Integer, ForeignKey("personas.id"))
     relationship_type = Column(String, default="지인")   # 지인 → 친구
+    relationship_score = Column(Integer, default=20)
+    last_delta = Column(Integer, default=0)
     interaction_count = Column(Integer, default=0)       # 피드 상호작용 횟수
     shared_facts = Column(JSON, default=list)            # 서로 아는 사실 (최대 10개)
     conversation_summaries = Column(JSON, default=list)  # 대화 요약 (최대 20개)
     last_talked = Column(DateTime, nullable=True)
+    updated_at = Column(DateTime, default=datetime.utcnow)
 
     persona_a = relationship("Persona", foreign_keys=[persona_a_id])
     persona_b = relationship("Persona", foreign_keys=[persona_b_id])

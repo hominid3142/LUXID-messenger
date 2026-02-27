@@ -19,17 +19,22 @@ from sqlalchemy import inspect, text
 from sqlalchemy.orm import Session
 from starlette.websockets import WebSocketState
 import fal_client
+from google.genai import types as genai_types
 from dotenv import load_dotenv
 
 load_dotenv()
 
 # 모듈화된 파일들에서 기능 임포트
 from database import engine, SessionLocal, Base
-from models import Persona, ChatRoom, User, PromptTemplate, SystemNotice, FeedPost, FeedComment, MapLocation, EveRelationship
+from models import Persona, ChatRoom, User, PromptTemplate, SystemNotice, FeedPost, FeedComment, MapLocation, EveRelationship, UserPersonaRelationship
 from memory import KST, volatile_memory, get_volatile_state, get_date_info, update_shared_memory, tick_info_slots, DIA_CATEGORIES
-from engine import run_medium_thinking, run_short_thinking, run_utterance, generate_eve_visuals, generate_eve_nickname, client, MODEL_ID, debug_log_buffer, sync_eve_life
+from engine import run_medium_thinking, run_short_thinking, run_utterance, generate_eve_visuals, generate_eve_nickname, client, MODEL_ID, debug_log_buffer, sync_eve_life, build_persona_traits
 from auth_utils import verify_password, get_password_hash, create_access_token, decode_access_token, update_user_tokens
 from scheduler import AEScheduler
+try:
+    from location_planner import planned_location_id_for_datetime
+except Exception:
+    planned_location_id_for_datetime = None
 
 class ProfileUpdate(BaseModel):
     display_name: str
@@ -51,6 +56,8 @@ app = FastAPI()
 # [v1.2.0] 비용 계산을 위한 사전 설정 상수
 COST_PER_1M_TOKENS = 0.15  # Gemini 3.0(Flash) 인풋/아웃풋 통합 평균가 ($0.15 / 1M tokens)
 COST_PER_IMAGE = 0.02  # fal.ai (Grok Imagine 등) 이미지 생성 단가 ($0.02 / image)
+USER_FEED_IMAGE_CAPTION_MODEL = os.environ.get("USER_FEED_IMAGE_CAPTION_MODEL", "gemini-2.5-flash-lite")
+USER_FEED_IMAGE_MAX_BYTES = int(os.environ.get("USER_FEED_IMAGE_MAX_BYTES", str(6 * 1024 * 1024)))
 
 
 MAX_LOGIN_FAILS = int(os.environ.get("MAX_LOGIN_FAILS", "5"))
@@ -140,6 +147,26 @@ def _ensure_feed_post_tag_columns():
 
 
 _ensure_feed_post_tag_columns()
+
+
+def _ensure_feed_post_location_columns():
+    try:
+        inspector = inspect(engine)
+        if "feed_posts" not in inspector.get_table_names():
+            return
+        existing = {c["name"] for c in inspector.get_columns("feed_posts")}
+        with engine.begin() as conn:
+            if "location_id" not in existing:
+                conn.execute(text("ALTER TABLE feed_posts ADD COLUMN location_id INTEGER"))
+            if "location_name" not in existing:
+                conn.execute(text("ALTER TABLE feed_posts ADD COLUMN location_name VARCHAR"))
+            if "location_district" not in existing:
+                conn.execute(text("ALTER TABLE feed_posts ADD COLUMN location_district VARCHAR"))
+    except Exception as e:
+        print(f"Schema patch failed for feed-post locations: {e}")
+
+
+_ensure_feed_post_location_columns()
 
 MAX_PROFILE_PHOTOS = 3
 
@@ -232,6 +259,150 @@ def _ensure_profile_gallery_columns():
 
 _ensure_profile_gallery_columns()
 
+
+def _ensure_relationship_schema():
+    try:
+        inspector = inspect(engine)
+        table_names = set(inspector.get_table_names())
+        with engine.begin() as conn:
+            if "chat_rooms" in table_names:
+                chat_cols = {c["name"] for c in inspector.get_columns("chat_rooms")}
+                wanted_chat_cols = {
+                    "relationship_last_defined_at": "TIMESTAMP",
+                    "relationship_summary_3line": "VARCHAR",
+                    "romance_state": "VARCHAR",
+                    "romance_partner_label": "VARCHAR",
+                    "confession_pending": "BOOLEAN",
+                    "confession_received_at": "TIMESTAMP",
+                    "confession_candidates": "JSON",
+                    "romance_decided_at": "TIMESTAMP",
+                    "fact_timeline": "JSON",
+                }
+                for col, typ in wanted_chat_cols.items():
+                    if col not in chat_cols:
+                        conn.execute(text(f"ALTER TABLE chat_rooms ADD COLUMN {col} {typ}"))
+
+            if "eve_relationships" in table_names:
+                eve_cols = {c["name"] for c in inspector.get_columns("eve_relationships")}
+                wanted_eve_cols = {
+                    "relationship_score": "INTEGER",
+                    "last_delta": "INTEGER",
+                    "updated_at": "TIMESTAMP",
+                }
+                for col, typ in wanted_eve_cols.items():
+                    if col not in eve_cols:
+                        conn.execute(text(f"ALTER TABLE eve_relationships ADD COLUMN {col} {typ}"))
+    except Exception as e:
+        print(f"Schema patch failed for relationship tables: {e}")
+
+    db = SessionLocal()
+    try:
+        changed = False
+        now_kst = datetime.now(KST).strftime("%Y-%m-%d %H:%M")
+
+        pair_map = {
+            (r.user_id, r.persona_id): r
+            for r in db.query(UserPersonaRelationship).all()
+        }
+
+        for room in db.query(ChatRoom).all():
+            if room.relationship_category is None:
+                room.relationship_category = "낯선 사람"
+                changed = True
+            if getattr(room, "romance_state", None) is None:
+                room.romance_state = "싱글"
+                changed = True
+            if getattr(room, "confession_pending", None) is None:
+                room.confession_pending = False
+                changed = True
+            if getattr(room, "confession_candidates", None) is None:
+                room.confession_candidates = []
+                changed = True
+
+            facts = room.fact_warehouse if isinstance(room.fact_warehouse, list) else []
+            timeline = getattr(room, "fact_timeline", None)
+            if (not isinstance(timeline, list) or not timeline) and facts:
+                migrated = []
+                for item in facts[-60:]:
+                    if isinstance(item, dict):
+                        fact_text = str(item.get("fact") or item.get("text") or item.get("content") or "").strip()
+                        recorded_at = str(item.get("recorded_at") or item.get("timestamp") or now_kst).strip()
+                        source = str(item.get("source") or "legacy").strip()
+                    else:
+                        fact_text = str(item).strip()
+                        recorded_at = now_kst
+                        source = "legacy"
+                    if fact_text:
+                        migrated.append({
+                            "fact": fact_text,
+                            "recorded_at": recorded_at,
+                            "source": source
+                        })
+                room.fact_timeline = migrated
+                changed = True
+
+            key = (room.owner_id, room.persona_id)
+            rel_pair = pair_map.get(key)
+            if not rel_pair:
+                rel_pair = UserPersonaRelationship(
+                    user_id=room.owner_id,
+                    persona_id=room.persona_id,
+                    relationship_category=room.relationship_category or "낯선 사람",
+                    relationship_score=room.v_relationship if room.v_relationship is not None else 20,
+                    likeability=room.v_likeability if room.v_likeability is not None else 50,
+                    erotic=room.v_erotic if room.v_erotic is not None else 30,
+                    mood=room.v_v_mood if room.v_v_mood is not None else 50,
+                    relationship_last_defined_at=getattr(room, "relationship_last_defined_at", None),
+                    relationship_summary_3line=getattr(room, "relationship_summary_3line", None),
+                    romance_state=getattr(room, "romance_state", "싱글") or "싱글",
+                    romance_partner_label=getattr(room, "romance_partner_label", None),
+                    confession_pending=bool(getattr(room, "confession_pending", False)),
+                    confession_received_at=getattr(room, "confession_received_at", None),
+                    confession_candidates=getattr(room, "confession_candidates", None) or [],
+                )
+                db.add(rel_pair)
+                pair_map[key] = rel_pair
+                changed = True
+            else:
+                if rel_pair.relationship_category is None:
+                    rel_pair.relationship_category = room.relationship_category or "낯선 사람"
+                    changed = True
+                if rel_pair.relationship_score is None:
+                    rel_pair.relationship_score = room.v_relationship if room.v_relationship is not None else 20
+                    changed = True
+                if rel_pair.romance_state is None:
+                    rel_pair.romance_state = getattr(room, "romance_state", "싱글") or "싱글"
+                    changed = True
+                if rel_pair.confession_pending is None:
+                    rel_pair.confession_pending = bool(getattr(room, "confession_pending", False))
+                    changed = True
+                if rel_pair.confession_candidates is None:
+                    rel_pair.confession_candidates = getattr(room, "confession_candidates", None) or []
+                    changed = True
+                rel_pair.updated_at = datetime.utcnow()
+
+        for rel in db.query(EveRelationship).all():
+            if rel.relationship_score is None:
+                rel.relationship_score = max(0, min(100, 20 + int(rel.interaction_count or 0)))
+                changed = True
+            if rel.last_delta is None:
+                rel.last_delta = 0
+                changed = True
+            if rel.updated_at is None:
+                rel.updated_at = datetime.utcnow()
+                changed = True
+
+        if changed:
+            db.commit()
+    except Exception as e:
+        db.rollback()
+        print(f"Relationship backfill failed: {e}")
+    finally:
+        db.close()
+
+
+_ensure_relationship_schema()
+
 # ---------------------------------------------------------
 # 0. 인증 및 유저 관리 유틸리티
 # ---------------------------------------------------------
@@ -298,6 +469,99 @@ def _record_login_failure(key: str):
 def _clear_login_failures(key: str):
     _login_failures.pop(key, None)
     _login_locks.pop(key, None)
+
+
+_CONFESSION_REGEX = re.compile(
+    r"(나랑\s*사귀|사귀자|사귈래|연애하자|고백할게|고백할게요|좋아해|사랑해|남친\s*해줘|여친\s*해줘|커플\s*하자)",
+    re.IGNORECASE,
+)
+_CONFESSION_NEGATIVE_REGEX = re.compile(
+    r"(사귀지\s*말|사귀긴\s*싫|고백\s*아니|농담|장난|거절|싫어)",
+    re.IGNORECASE,
+)
+
+
+def _is_confession_message(text: str) -> bool:
+    t = str(text or "").strip()
+    if not t:
+        return False
+    if _CONFESSION_NEGATIVE_REGEX.search(t):
+        return False
+    return bool(_CONFESSION_REGEX.search(t))
+
+
+def _append_room_fact_event(room: ChatRoom, fact_text: str, now_kst: datetime, source: str = "confession"):
+    if not fact_text:
+        return
+    fact_warehouse = list(room.fact_warehouse or [])
+    if fact_text not in fact_warehouse:
+        fact_warehouse.append(fact_text)
+        room.fact_warehouse = fact_warehouse[-60:]
+
+    timeline = list(getattr(room, "fact_timeline", None) or [])
+    timeline.append({
+        "fact": fact_text,
+        "recorded_at": now_kst.strftime("%Y-%m-%d %H:%M"),
+        "source": source,
+    })
+    room.fact_timeline = timeline[-200:]
+
+
+def _record_confession_event(
+    db: Session,
+    room: ChatRoom,
+    current_user: User,
+    message_text: str,
+) -> bool:
+    """
+    Detect confession and persist event without LLM:
+    - turn on confession pending
+    - append hardcoded fact text "누구에게 언제 몇 시에 고백받음"
+    """
+    if not _is_confession_message(message_text):
+        return False
+
+    now_kst = datetime.now(KST)
+    user_label = (current_user.display_name or current_user.username or f"user-{current_user.id}").strip()
+    fact_text = f"{user_label}에게 {now_kst.strftime('%Y-%m-%d %H:%M')}에 고백받음"
+
+    pair = db.query(UserPersonaRelationship).filter(
+        UserPersonaRelationship.user_id == room.owner_id,
+        UserPersonaRelationship.persona_id == room.persona_id
+    ).first()
+    if not pair:
+        pair = UserPersonaRelationship(
+            user_id=room.owner_id,
+            persona_id=room.persona_id,
+            relationship_category=room.relationship_category or "낯선 사람",
+            relationship_score=room.v_relationship if room.v_relationship is not None else 20,
+            likeability=room.v_likeability if room.v_likeability is not None else 50,
+            erotic=room.v_erotic if room.v_erotic is not None else 30,
+            mood=room.v_v_mood if room.v_v_mood is not None else 50,
+        )
+        db.add(pair)
+
+    candidates = list(pair.confession_candidates or [])
+    candidate_entry = {
+        "user_id": current_user.id,
+        "user_name": user_label,
+        "at": now_kst.strftime("%Y-%m-%d %H:%M"),
+        "message": str(message_text or "")[:180],
+    }
+    # avoid exact duplicate spam when same message is resent repeatedly
+    if not candidates or candidates[-1].get("message") != candidate_entry["message"]:
+        candidates.append(candidate_entry)
+    pair.confession_candidates = candidates[-20:]
+    pair.confession_pending = True
+    if not pair.confession_received_at:
+        pair.confession_received_at = now_kst
+    pair.updated_at = datetime.utcnow()
+
+    room.confession_pending = True
+    room.confession_received_at = pair.confession_received_at or now_kst
+    room.confession_candidates = list(pair.confession_candidates or [])
+    _append_room_fact_event(room, fact_text, now_kst, source="confession")
+    return True
 
 
 def update_user_tokens(db: Session, user_id: int, token_count: int):
@@ -516,6 +780,13 @@ async def get_feed(
                 "room_id": user_room_map.get(tagged.id) if current_user else None
             })
 
+        post_location_name = str(getattr(post, "location_name", "") or "").strip() or None
+        post_location_district = str(getattr(post, "location_district", "") or "").strip() or None
+        if (not post_location_name) and post.persona and getattr(post.persona, "current_location", None):
+            loc = post.persona.current_location
+            post_location_name = str(getattr(loc, "name", "") or "").strip() or None
+            post_location_district = str(getattr(loc, "district", "") or "").strip() or None
+
         feed_data.append({
             "id": post.id,
             "author_type": author_type,
@@ -527,7 +798,9 @@ async def get_feed(
             "tagged_personas": tagged_personas_payload,
             "tag_activity": post.tag_activity,
             "image_url": post.image_url,
-            "image_prompt": post.image_prompt,  # 관리자를 위한 프롬프트 데이터
+            "image_prompt": (post.image_prompt if (current_user and current_user.is_admin) else None),
+            "location_name": post_location_name,
+            "location_district": post_location_district,
             "like_count": post.like_count,
             "has_liked": has_liked,
             "can_delete": post_can_delete,
@@ -551,16 +824,28 @@ async def create_user_feed_post(data: dict = Body(...), current_user: User = Dep
 
     content = str(data.get("content") or "").strip()
     image_url = str(data.get("image_url") or "").strip() or None
+    location_name = str(data.get("location_name") or "").strip() or None
+    location_district = str(data.get("location_district") or "").strip() or None
 
     if not content:
         raise HTTPException(status_code=400, detail="내용을 입력해주세요.")
     if len(content) > 1000:
         raise HTTPException(status_code=400, detail="내용은 1000자 이하여야 합니다.")
 
+    image_prompt = None
+    if image_url:
+        caption_text, caption_tokens = await _generate_user_feed_image_prompt(image_url)
+        if caption_tokens > 0:
+            update_user_tokens(db, current_user.id, caption_tokens)
+        image_prompt = caption_text or "image attached post (caption failed)"
+
     post = FeedPost(
         user_id=current_user.id,
         content=content,
         image_url=image_url,
+        image_prompt=image_prompt,
+        location_name=location_name,
+        location_district=location_district,
         is_published=True
     )
     db.add(post)
@@ -715,13 +1000,18 @@ async def login(request: Request, data: dict = Body(...), db: Session = Depends(
 
 # [Phase 5] 모달 미니 프로필용 퍼소나 정보 조회
 @app.get("/api/public/persona/{persona_id}")
-async def get_public_persona(persona_id: int, db: Session = Depends(get_db)):
+async def get_public_persona(
+    persona_id: int,
+    current_user: Optional[User] = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
     p = db.query(Persona).filter(Persona.id == persona_id).first()
     if not p:
         raise HTTPException(status_code=404, detail="이브를 찾을 수 없습니다.")
     
     details = p.profile_details or {}
-    intro_text = str(details.get("hook") or details.get("intro") or "").strip()
+    intro_text = str(details.get("hook") or "").strip()
+    diaries = list(p.shared_journal or []) if (current_user and current_user.is_admin) else []
     return {
         "id": p.id,
         "name": p.name,
@@ -731,7 +1021,8 @@ async def get_public_persona(persona_id: int, db: Session = Depends(get_db)):
         "age": p.age,
         "gender": p.gender,
         "mbti": p.mbti,
-        "profile_details": details
+        "profile_details": details,
+        "diaries": diaries,
     }
 
 
@@ -868,7 +1159,7 @@ async def get_suggested_personas(limit: int = 5, current_user: Optional[User] = 
     result = []
     for p in personas:
         details = p.profile_details or {}
-        intro_text = str(details.get("hook") or details.get("intro") or "").strip()
+        intro_text = str(details.get("hook") or "").strip()
         result.append({
             "id": p.id,
             "name": p.name,
@@ -1046,12 +1337,6 @@ async def admin_get_all_eves(current_user: User = Depends(get_current_user), db:
             "image_prompt": p.image_prompt,
             "mbti": p.mbti,
             "hook": details.get("hook", ""),
-            "intro": details.get("intro", ""),
-            "job": details.get("job", ""),
-            "goal": details.get("goal", ""),
-            "lifestyle": details.get("lifestyle", ""),
-            "tmi": details.get("tmi", ""),
-            "interests": details.get("interests", []),
             "rooms": room_data
         })
         
@@ -1248,7 +1533,8 @@ async def admin_update_identity(room_id: int, data: dict = Body(...), current_us
     if not room: return {"status": "error"}
 
     p = room.persona
-    if 'profile_details' in data: p.profile_details = data['profile_details']
+    if 'profile_details' in data:
+        p.profile_details = _sanitize_profile_details(data['profile_details'])
     if 'daily_schedule' in data: p.daily_schedule = data['daily_schedule']
     if 'diaries' in data: room.diaries = data['diaries']
     if 'model_id' in data: room.model_id = data['model_id']
@@ -1623,26 +1909,20 @@ async def create_single_eve(white: int, black: int, asian: int, db: Session, fem
         life_data, _ = await asyncio.wait_for(generate_eve_life_details(temp_p_dict), timeout=25)
     except Exception:
         life_data = None
-    job = "직장인"
-    intro = "밝은 성격"
     profile_details = {}
     daily_schedule = {}
     
     if life_data:
         profile_details = life_data.get('profile_details', {})
         daily_schedule = life_data.get('daily_schedule', {})
-        job = profile_details.get('job', '직장인')
-        intro = profile_details.get('intro', '밝은 성격')
-        
-    temp_p_dict['job'] = job
-    temp_p_dict['intro'] = intro
+
     try:
         name = await asyncio.wait_for(generate_eve_nickname(temp_p_dict), timeout=15)
     except Exception:
         name = generate_random_nickname()
     
     p_dict_for_visuals = {
-        "age": age, "gender": gender, "mbti": mbti, "job": job, "intro": intro
+        "age": age, "gender": gender, "mbti": mbti
     }
     try:
         image_prompt, _ = await asyncio.wait_for(generate_eve_visuals(p_dict_for_visuals), timeout=15)
@@ -1897,7 +2177,7 @@ def _merge_missing(base: dict, generated: dict) -> dict:
     for k, v in (generated or {}).items():
         if k in merged and isinstance(merged[k], list) and isinstance(v, list):
             # Keep user-provided list items and only append missing slots.
-            target_len = 3 if k in ["interests", "daily_tasks"] else len(v)
+            target_len = 3 if k == "daily_tasks" else len(v)
             existing = [item for item in merged[k] if item not in [None, ""]]
             for item in v:
                 if item not in existing:
@@ -1951,6 +2231,93 @@ def _prepare_fal_image_url(raw_value: str) -> str:
     if os.path.isfile(v):
         return fal_client.upload_file(v)
     return v
+
+
+def _load_image_bytes_for_caption(image_input: str, max_bytes: int = USER_FEED_IMAGE_MAX_BYTES) -> tuple[Optional[bytes], Optional[str]]:
+    v = (image_input or "").strip()
+    if not v:
+        return None, None
+
+    if v.startswith("data:image/"):
+        try:
+            header, b64data = v.split(",", 1)
+        except ValueError:
+            return None, None
+        mime_type = header.split(";")[0][5:] if ";" in header else "image/png"
+        try:
+            blob = base64.b64decode(b64data, validate=False)
+        except Exception:
+            return None, None
+        if not blob:
+            return None, None
+        if len(blob) > max_bytes:
+            return None, None
+        return blob, mime_type
+
+    if v.startswith("http://") or v.startswith("https://"):
+        try:
+            with urllib.request.urlopen(v, timeout=15) as resp:
+                blob = resp.read(max_bytes + 1)
+                ctype = resp.headers.get_content_type() or "image/jpeg"
+            if len(blob) > max_bytes:
+                return None, None
+            return blob, ctype
+        except Exception:
+            return None, None
+
+    if os.path.isfile(v):
+        try:
+            with open(v, "rb") as f:
+                blob = f.read(max_bytes + 1)
+            ext = os.path.splitext(v.lower())[1]
+            mime_map = {
+                ".jpg": "image/jpeg",
+                ".jpeg": "image/jpeg",
+                ".png": "image/png",
+                ".webp": "image/webp",
+                ".gif": "image/gif",
+            }
+            mime_type = mime_map.get(ext, "image/jpeg")
+            if len(blob) > max_bytes:
+                return None, None
+            return blob, mime_type
+        except Exception:
+            return None, None
+
+    return None, None
+
+
+async def _generate_user_feed_image_prompt(image_input: str) -> tuple[str, int]:
+    image_bytes, mime_type = await asyncio.to_thread(_load_image_bytes_for_caption, image_input, USER_FEED_IMAGE_MAX_BYTES)
+    if not image_bytes or not mime_type:
+        return "", 0
+
+    instruction = (
+        "Describe this social feed photo in Korean. "
+        "Include only visible people, objects, place, mood, and readable text. "
+        "Do not guess beyond visible evidence. 1-2 sentences, max 120 characters."
+    )
+
+    try:
+        res = await client.aio.models.generate_content(
+            model=USER_FEED_IMAGE_CAPTION_MODEL,
+            contents=[
+                genai_types.Content(
+                    role="user",
+                    parts=[
+                        genai_types.Part.from_text(text=instruction),
+                        genai_types.Part.from_bytes(data=image_bytes, mime_type=mime_type),
+                    ],
+                )
+            ],
+        )
+        raw = str(getattr(res, "text", "") or "").strip()
+        text_out = re.sub(r"\s+", " ", raw).strip().strip('"').strip("'")
+        tokens = int(getattr(getattr(res, "usage_metadata", None), "total_token_count", 0) or 0)
+        return text_out[:220], tokens
+    except Exception as e:
+        print(f"user feed image caption error: {e}")
+        return "", 0
 
 
 def _get_admin_users(db: Session) -> List[User]:
@@ -2038,13 +2405,8 @@ async def _autofill_custom_eve_payload(raw_data: dict) -> dict:
             "sleep_time": "23:00"
         }
 
-    job = str(profile_details.get("job", "")).strip()
-    intro = str(profile_details.get("intro", "")).strip()
-
     name = str(data.get("name") or "").strip()
     if not name:
-        temp_p_dict["job"] = job or "직장인"
-        temp_p_dict["intro"] = intro or "밝은 성격"
         name = await generate_eve_nickname(temp_p_dict)
 
     image_prompt = str(data.get("image_prompt") or "").strip()
@@ -2052,9 +2414,7 @@ async def _autofill_custom_eve_payload(raw_data: dict) -> dict:
         visual_input = {
             "age": age,
             "gender": gender,
-            "mbti": mbti,
-            "job": job or "직장인",
-            "intro": intro or "밝은 성격"
+            "mbti": mbti
         }
         image_prompt, _ = await generate_eve_visuals(visual_input)
 
@@ -2245,37 +2605,32 @@ async def generate_eve_life_details(p_dict):
     existing_profile = _sanitize_profile_details(existing_profile)
     existing_profile_str = json.dumps(existing_profile, ensure_ascii=False)
     existing_schedule_str = json.dumps(existing_schedule, ensure_ascii=False)
+    traits_bundle = build_persona_traits(p_dict)
     prompt = f"""
     당신은 틴더에서 짝을 만나기 위해 프로필을 작성 중입니다.
     오늘 날짜: {date_info['full_str']}
 
     다음 기본 데이터를 바탕으로 [프로필 hook]과 [하루 일과]를 작성하세요.
 
-    [캐릭터 데이터]
-    - 닉네임: {p_dict['name']}
-    - 나이: {p_dict['age']}세
-    - MBTI: {p_dict['mbti']}
-    - 성향: 진지함{p_dict['p_seriousness']}/10, 친근함{p_dict['p_friendliness']}/10, 상식{p_dict['p_rationality']}/10, 채팅체{p_dict['p_slang']}/10 
+    [이브 특성 패키지]
+    {json.dumps(traits_bundle, ensure_ascii=False)}
 
     [입력 제약 - 반드시 준수]
     - 사용자가 이미 입력한 profile_details 일부값: {existing_profile_str}
     - 사용자가 이미 입력한 daily_schedule 일부값: {existing_schedule_str}
     - 사용자가 입력한 값(비어있지 않은 값)은 절대 덮어쓰지 말 것.
     - 빈 항목만 채울 것.
-    - profile_details에서는 hook만 허용하며, 다른 키는 절대 생성하지 말 것.
     - 사용자가 일부만 입력한 리스트(예: daily_tasks)는 기존 항목을 유지하고 부족분만 채울 것.
 
     [임무 1: 프로필 hook]
-    - Hook만 생성할 것.
-    - Hook은 반드시 나이, MBTI, 성향 4종만 참고해서 만들 것.
-    - 직업, 취미, TMI, 라이프스타일, 목표, 성별 정보는 절대 넣지 말 것.
+    - 틴더에서 이성을 유혹하거나 개성을 표현하기 위한 한 줄 소개 문구
     - 길이는 1문장, 14~28자.
 
     [임무 2: 하루 일과]
     - 오늘({date_info['full_str']})의 일과를 요일과 공휴일 여부를 반영하여 작성하세요.
-    - 기상 시간 (wake_time): 07:00~09:00 사이의 시간
+    - 기상 시간 (wake_time): HH:MM 형식의 시간
     - 오늘 할 일 (daily_tasks): 1~3개의 주요 활동 (반드시 'HH:MM 활동내용' 형식으로 시간을 포함할 것)
-    - 취침 시간 (sleep_time): 22:00~24:00 사이의 시간
+    - 취침 시간 (sleep_time): HH:MM 형식의 시간
 
     JSON 응답 형식:
     {{
@@ -2283,9 +2638,9 @@ async def generate_eve_life_details(p_dict):
             "hook": "문구"
         }},
         "daily_schedule": {{
-            "wake_time": "07:30",
-            "daily_tasks": ["09:00 출근 및 회의", "13:00 점심 후 프로젝트 작업", "19:00 저녁 운동"],
-            "sleep_time": "23:00"
+            "wake_time": "HH:MM",
+            "daily_tasks": ["HH:MM 첫 번째 일과", "HH:MM 두 번째 일과", "HH:MM 세 번째 일과"],
+            "sleep_time": "HH:MM"
         }}
     }}
     """
@@ -2356,6 +2711,7 @@ async def websocket_endpoint(websocket: WebSocket, room_id: int):
     }
     v_state = get_volatile_state(room_id, room)
     v_state['p_dict'] = p_dict
+    v_state.setdefault('medium_inflight', False)
     
     # [v3.0.0] 통합 기억 시스템: 현재 유저 ID와 페르소나 객체 참조 저장
     v_state['current_user_id'] = current_user_obj.id
@@ -2421,6 +2777,88 @@ async def websocket_endpoint(websocket: WebSocket, room_id: int):
             async with v_state['lock']:
                 v_state['websocket'] = None
 
+    async def run_medium_thinking_background():
+        db_medium = SessionLocal()
+        try:
+            db_room = db_medium.query(ChatRoom).filter(ChatRoom.id == room_id).first()
+            if not db_room or db_room.is_frozen:
+                return
+
+            target_model = db_room.model_id
+            prompts = {pt.key: pt.template for pt in db_medium.query(PromptTemplate).all()}
+            db_persona = db_room.persona
+
+            _, tokens = await run_medium_thinking(
+                v_state, p_dict, room_id,
+                custom_prompt=prompts.get('medium_thinking'),
+                model_id=target_model,
+                current_user_id=v_state.get('current_user_id'),
+                persona=db_persona
+            )
+            db_room.fact_warehouse = v_state['fact_warehouse']
+            db_room.relationship_category = v_state.get('relationship_category', '낯선 사람')
+
+            shared_raw = v_state.get('_last_shared_facts', [])
+            private_raw = v_state.get('_last_private_facts', [])
+            shared_facts = shared_raw if isinstance(shared_raw, list) else ([shared_raw] if shared_raw is not None else [])
+            private_facts = private_raw if isinstance(private_raw, list) else ([private_raw] if private_raw is not None else [])
+
+            all_new_facts = []
+            for item in (shared_facts + private_facts):
+                if isinstance(item, (dict, str)):
+                    all_new_facts.append(item)
+                elif item is not None:
+                    all_new_facts.append(str(item))
+
+            if all_new_facts and db_persona:
+                try:
+                    update_shared_memory(
+                        db_medium, db_persona.id, all_new_facts,
+                        source_user_id=v_state.get('current_user_id')
+                    )
+                except Exception as mem_err:
+                    print(f"update_shared_memory error(room={room_id}): {mem_err}")
+
+            conv_summary = v_state.get('_last_conversation_summary')
+            if conv_summary and db_persona:
+                summary_text = conv_summary.get('summary', '') if isinstance(conv_summary, dict) else str(conv_summary)
+                is_public = conv_summary.get('is_public', True) if isinstance(conv_summary, dict) else True
+                if summary_text:
+                    try:
+                        update_shared_memory(
+                            db_medium, db_persona.id,
+                            [{"fact": summary_text, "is_public": is_public, "category": "conversation"}],
+                            source_user_id=v_state.get('current_user_id')
+                        )
+                    except Exception as conv_mem_err:
+                        print(f"conversation_summary memory error(room={room_id}): {conv_mem_err}")
+
+            if db_persona:
+                registry = list(db_persona.user_registry or [])
+                for entry in registry:
+                    if not isinstance(entry, dict):
+                        continue
+                    if entry.get('user_id') == v_state.get('current_user_id'):
+                        entry['relationship'] = v_state.get('relationship_category', '낯선 사람')
+                        break
+                db_persona.user_registry = registry
+
+            db_medium.commit()
+            if tokens > 0:
+                update_user_tokens(db_medium, current_user_obj.id, tokens)
+        except Exception as e:
+            import traceback
+            print(f"Background Medium Error(room={room_id}): {e}")
+            traceback.print_exc()
+            try:
+                db_medium.rollback()
+            except Exception:
+                pass
+        finally:
+            db_medium.close()
+            async with v_state['lock']:
+                v_state['medium_inflight'] = False
+
     async def worker():
         user_id = current_user_obj.id
         try:
@@ -2465,6 +2903,12 @@ async def websocket_endpoint(websocket: WebSocket, room_id: int):
                             ChatRoom.id == room_id).first()
                         if db_room:
                             db_room.history = v_state['ram_history'][-100:]
+                            _record_confession_event(
+                                db=db,
+                                room=db_room,
+                                current_user=current_user_obj,
+                                message_text=merged,
+                            )
                             db.commit()
                         db.close()
 
@@ -2505,6 +2949,15 @@ async def websocket_endpoint(websocket: WebSocket, room_id: int):
                 tokens_used = 0
 
                 if current_tick == 19:
+                    should_start_medium = False
+                    async with v_state['lock']:
+                        if not v_state.get('medium_inflight', False):
+                            v_state['medium_inflight'] = True
+                            should_start_medium = True
+                    if should_start_medium:
+                        asyncio.create_task(run_medium_thinking_background())
+
+                if False and current_tick == 19:
                     # [v3.0.0] 통합 기억용 persona 객체 로드
                     db_persona = db_room.persona
                     
@@ -2521,14 +2974,26 @@ async def websocket_endpoint(websocket: WebSocket, room_id: int):
                     db_room.relationship_category = v_state.get('relationship_category', '낯선 사람')
                     
                     # [v3.0.0] 통합 기억 업데이트 (shared_facts + private_facts)
-                    shared_facts = v_state.get('_last_shared_facts', [])
-                    private_facts = v_state.get('_last_private_facts', [])
-                    all_new_facts = shared_facts + private_facts
+                    shared_raw = v_state.get('_last_shared_facts', [])
+                    private_raw = v_state.get('_last_private_facts', [])
+                    shared_facts = shared_raw if isinstance(shared_raw, list) else ([shared_raw] if shared_raw is not None else [])
+                    private_facts = private_raw if isinstance(private_raw, list) else ([private_raw] if private_raw is not None else [])
+
+                    all_new_facts = []
+                    for item in (shared_facts + private_facts):
+                        if isinstance(item, (dict, str)):
+                            all_new_facts.append(item)
+                        elif item is not None:
+                            all_new_facts.append(str(item))
+
                     if all_new_facts and db_persona:
-                        update_shared_memory(
-                            db, db_persona.id, all_new_facts,
-                            source_user_id=v_state.get('current_user_id')
-                        )
+                        try:
+                            update_shared_memory(
+                                db, db_persona.id, all_new_facts,
+                                source_user_id=v_state.get('current_user_id')
+                            )
+                        except Exception as mem_err:
+                            print(f"update_shared_memory error(room={room_id}): {mem_err}")
                     
                     # [v3.1.0] 대화 요약 저장 (category: conversation)
                     conv_summary = v_state.get('_last_conversation_summary')
@@ -2536,16 +3001,21 @@ async def websocket_endpoint(websocket: WebSocket, room_id: int):
                         summary_text = conv_summary.get('summary', '') if isinstance(conv_summary, dict) else str(conv_summary)
                         is_public = conv_summary.get('is_public', True) if isinstance(conv_summary, dict) else True
                         if summary_text:
-                            update_shared_memory(
-                                db, db_persona.id,
-                                [{"fact": summary_text, "is_public": is_public, "category": "conversation"}],
-                                source_user_id=v_state.get('current_user_id')
-                            )
+                            try:
+                                update_shared_memory(
+                                    db, db_persona.id,
+                                    [{"fact": summary_text, "is_public": is_public, "category": "conversation"}],
+                                    source_user_id=v_state.get('current_user_id')
+                                )
+                            except Exception as conv_mem_err:
+                                print(f"conversation_summary memory error(room={room_id}): {conv_mem_err}")
                     
                     # [v3.0.0] user_registry 관계 동기화
                     if db_persona:
                         registry = list(db_persona.user_registry or [])
                         for entry in registry:
+                            if not isinstance(entry, dict):
+                                continue
                             if entry.get('user_id') == v_state.get('current_user_id'):
                                 entry['relationship'] = v_state.get('relationship_category', '낯선 사람')
                                 break
@@ -2674,9 +3144,19 @@ async def websocket_endpoint(websocket: WebSocket, room_id: int):
                 async with volatile_memory[room_id]['lock']:
                     volatile_memory[room_id]['websocket'] = None
         except Exception as e:
+            import traceback
             print(f"Worker Error: {e}")
+            traceback.print_exc()
 
-    await asyncio.gather(receiver(), worker())
+    async def worker_guard():
+        while True:
+            await worker()
+            if websocket.client_state != WebSocketState.CONNECTED:
+                break
+            print(f"Worker loop restarted(room={room_id})")
+            await asyncio.sleep(0.2)
+
+    await asyncio.gather(receiver(), worker_guard())
 
 
 # ---------------------------------------------------------
@@ -2698,29 +3178,34 @@ def get_friends(current_user: User = Depends(get_current_user),
     if not current_user: return []
     rooms = db.query(ChatRoom).filter(
         ChatRoom.owner_id == current_user.id).all()
-    return [{
-        "room_id": r.id,
-        "persona_id": r.persona.id,
-        "name": r.persona.name,
-        "age": r.persona.age,
-        "gender": r.persona.gender,
-        "mbti": r.persona.mbti,
-        "profile_image_url": r.persona.profile_image_url,
-        "profile_images": _build_persona_gallery(r.persona),
-        "image_prompt": r.persona.image_prompt,
-        "profile_details": r.persona.profile_details,
-        "p_seriousness": r.persona.p_seriousness,
-        "p_friendliness": r.persona.p_friendliness,
-        "p_rationality": r.persona.p_rationality,
-        "p_slang": r.persona.p_slang,
-        "v_likeability": r.v_likeability,
-        "v_erotic": r.v_erotic,
-        "v_v_mood": r.v_v_mood,
-        "v_relationship": r.v_relationship,
-        "history": r.history,
-        "relationship_category": r.relationship_category,
-        "daily_schedule": r.persona.daily_schedule
-    } for r in rooms]
+    data = []
+    for r in rooms:
+        persona = r.persona
+        data.append({
+            "room_id": r.id,
+            "persona_id": persona.id,
+            "name": persona.name,
+            "age": persona.age,
+            "gender": persona.gender,
+            "mbti": persona.mbti,
+            "profile_image_url": persona.profile_image_url,
+            "profile_images": _build_persona_gallery(persona),
+            "image_prompt": persona.image_prompt,
+            "profile_details": persona.profile_details,
+            "p_seriousness": persona.p_seriousness,
+            "p_friendliness": persona.p_friendliness,
+            "p_rationality": persona.p_rationality,
+            "p_slang": persona.p_slang,
+            "v_likeability": r.v_likeability,
+            "v_erotic": r.v_erotic,
+            "v_v_mood": r.v_v_mood,
+            "v_relationship": r.v_relationship,
+            "history": r.history,
+            "relationship_category": r.relationship_category,
+            "daily_schedule": persona.daily_schedule,
+            "diaries": list(persona.shared_journal or []) if current_user.is_admin else [],
+        })
+    return data
 
 
 # [v3.2.0] 이브 프로필 통계 API
@@ -2841,7 +3326,7 @@ async def get_world_map(current_user: User = Depends(get_current_user), db: Sess
     pop_counts = {}
     eves = db.query(Persona).all()
     
-    # 임시: 위치가 없는 이브들에게 랜덤 위치 할당 (시각화 테스트용)
+    # 스케줄 기반 위치를 사용한다. 랜덤 더미 배정은 하지 않는다.
     all_locs = db.query(MapLocation).all()
     if not all_locs:
         # DB에 맵 데이터가 없으면 시딩 시도
@@ -2849,20 +3334,36 @@ async def get_world_map(current_user: User = Depends(get_current_user), db: Sess
         all_locs = db.query(MapLocation).all()
         if not all_locs:
              return {"districts": [], "friends": []}
-        
+
     loc_map = {loc.id: loc for loc in all_locs}
-    
+    now_kst = datetime.now(KST)
+    touched = False
+
     # 이브가 한 명도 없을 때도 맵 구조는 반환해야 함
     for eve in eves:
         if not eve.current_location_id:
-            # 여기서는 DB 저장 없이 메모리상에서만 랜덤 배정 (or 저장)
-            # 실제로는 스케줄러가 해야 함. 일단 시각화를 위해 랜덤 저장.
-            eve.current_location_id = random.choice(all_locs).id
-            db.commit()
-            
+            planned_id = None
+            if planned_location_id_for_datetime:
+                try:
+                    planned_id = planned_location_id_for_datetime(
+                        persona_id=eve.id,
+                        daily_schedule=eve.daily_schedule,
+                        locations=all_locs,
+                        when=now_kst,
+                    )
+                except Exception:
+                    planned_id = None
+            if not planned_id and all_locs:
+                planned_id = all_locs[(int(eve.id) + now_kst.hour) % len(all_locs)].id
+            if planned_id:
+                eve.current_location_id = int(planned_id)
+                touched = True
+
         lid = eve.current_location_id
         if lid:
             pop_counts[lid] = pop_counts.get(lid, 0) + 1
+    if touched:
+        db.commit()
 
     # 2. 구역 데이터 구성
     # District별로 그룹화

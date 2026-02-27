@@ -249,6 +249,11 @@
                     <div id="fp-feed-list" style="display:flex; flex-direction:column; gap:10px;"></div>
                 </div>
 
+                <div class="profile-section" id="fp-diary-section" style="display:none;">
+                    <div class="profile-section-title">All Diaries</div>
+                    <div id="fp-diary-list" style="display:flex; flex-direction:column; gap:10px;"></div>
+                </div>
+
                 <div class="profile-secondary-actions">
                     <button class="profile-btn-secondary" id="fp-life-btn" style="display: none;">Life Details</button>
                     <button class="profile-btn-danger" id="fp-delete-btn">Delete Friend</button>
@@ -300,35 +305,14 @@
 
         <!-- LUXID 리브랜딩 및 애니메이션 구조 -->
         <div id="auth-overlay">
-            <!-- [v1.5.0] 1단계: 시작하기 화면 -->
-            <div id="welcome-screen">
-                <div class="welcome-logo">LUXID Messenger</div>
-                <div class="welcome-sub">LUXID 여행자를 위한 메신저</div>
-                <button class="auth-btn-main start-btn" onclick="showAuthForms()">
-                    시작하기
-                </button>
-            </div>
-
-            <!-- 2단계: 로그인/회원가입 (시작하기 클릭 후 표시) -->
-            <div id="auth-form-container" style="display: none">
-                <div id="login-form" class="auth-group">
-                    <input type="text" id="login-username" class="auth-input" placeholder="아이디" />
-                    <input type="password" id="login-password" class="auth-input" placeholder="비밀번호" />
-                    <button class="auth-btn-main" onclick="handleLogin()">
-                        로그인
-                    </button>
-                    <div class="auth-link" onclick="toggleAuthMode('register')">
-                        회원가입
-                    </div>
-                </div>
-                <div id="register-form" class="auth-group" style="display: none">
-                    <input type="text" id="reg-username" class="auth-input" placeholder="아이디" />
-                    <input type="password" id="reg-password" class="auth-input" placeholder="비밀번호" />
-                    <button class="auth-btn-main" onclick="handleRegister()">
-                        가입하기
-                    </button>
-                    <div class="auth-link" onclick="toggleAuthMode('login')">
-                        로그인으로 돌아가기
+            <div id="intro-tutorial-screen" style="display: none">
+                <div class="intro-tutorial-card">
+                    <div id="intro-tutorial-progress" class="intro-tutorial-progress">1 / 5</div>
+                    <h2 id="intro-tutorial-title" class="intro-tutorial-title"></h2>
+                    <p id="intro-tutorial-body" class="intro-tutorial-body"></p>
+                    <div class="intro-tutorial-actions">
+                        <button type="button" class="intro-tutorial-skip" onclick="skipIntroTutorial()">Skip</button>
+                        <button type="button" id="intro-tutorial-next-btn" class="auth-btn-main" onclick="nextIntroTutorial()">Next</button>
                     </div>
                 </div>
             </div>
@@ -452,6 +436,7 @@
             <div class="nav-item active" onclick="switchMobileView('feed')">
                 <span class="icon">🏠</span>
                 <span class="label">홈</span>
+                <span id="feed-tab-badge" class="nav-badge" style="display:none;">0</span>
             </div>
             <div class="nav-item" onclick="switchMobileView('map')">
                 <span class="icon">🗺️</span>
@@ -464,6 +449,7 @@
             <div class="nav-item" onclick="switchMobileView('chats')">
                 <span class="icon">💬</span>
                 <span class="label">채팅</span>
+                <span id="chats-tab-badge" class="nav-badge" style="display:none;">0</span>
             </div>
             <!-- [v1.5.0] 설정 탭 추가 -->
             <div class="nav-item" onclick="switchMobileView('settings')">
