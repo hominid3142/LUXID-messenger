@@ -537,6 +537,12 @@ function switchAdminTab(tab) {
     if (atabFactory) atabFactory.classList.toggle("active", tab === "factory" || tab === "batch");
     if (atabCustom) atabCustom.classList.toggle("active", tab === "custom");
 
+    if (tab !== "status") {
+        stopAdminLogPolling();
+    } else if (currentAdminSubTab === "debug") {
+        startAdminLogPolling();
+    }
+
     if (tab === "status") backToEveBrowser();
     if (tab === "users") loadAdminUsers();
 }
@@ -902,6 +908,25 @@ async function createCustomEve() {
     }
 }
 
+let currentAdminSubTab = "engine";
+let adminLogPollTimer = null;
+
+function stopAdminLogPolling() {
+    if (adminLogPollTimer) {
+        clearInterval(adminLogPollTimer);
+        adminLogPollTimer = null;
+    }
+}
+
+function startAdminLogPolling() {
+    stopAdminLogPolling();
+    adminLogPollTimer = setInterval(() => {
+        if (currentAdminSubTab !== "debug") return;
+        loadDebugLogs();
+        loadServerLogs();
+    }, 3000);
+}
+
 function switchAdminSubTab(sub) {
     const contents = document.querySelectorAll(".admin-sub-content");
     contents.forEach(c => c.style.display = "none");
@@ -914,9 +939,17 @@ function switchAdminSubTab(sub) {
         t.classList.toggle("active", t.dataset.sub === sub);
     });
 
+    currentAdminSubTab = sub;
+
     if (sub === "identity") loadAdminIdentity();
     if (sub === "prompt") loadPromptTemplate();
-    if (sub === "debug") loadDebugLogs();
+    if (sub === "debug") {
+        loadDebugLogs();
+        loadServerLogs();
+        startAdminLogPolling();
+    } else {
+        stopAdminLogPolling();
+    }
     if (sub === "create") checkActiveBatchJob();
 }
 
@@ -2499,6 +2532,15 @@ async function savePromptTemplate() {
     if (res.ok) alert("전략 지침이 업데이트되었습니다.");
 }
 
+function escapeHtml(text) {
+    return String(text ?? "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#39;");
+}
+
 async function loadDebugLogs() {
     const res = await fetch("/admin/debug-logs", { headers: { Authorization: `Bearer ${accessToken}` } });
     if (res.ok) {
@@ -2507,12 +2549,48 @@ async function loadDebugLogs() {
         if (!list) return;
         list.innerHTML = logs.reverse().map(l => `
             <div class="debug-log-item ${l.engine_type.includes('ERROR') ? 'error' : ''}">
-                <div style="display:flex; justify-content:space-between; margin-bottom:5px;"><b style="color:var(--blue);">${l.engine_type}</b><span style="opacity:0.6;">${l.ts}</span></div>
-                <div style="font-size:9px; color:var(--text-sub); margin-bottom:5px;">Room: ${l.room_id} | Model: ${l.model}</div>
-                <div style="background:#f8f8f9; padding:5px; border-radius:4px; max-height:60px; overflow-y:auto; margin-bottom:5px; white-space:pre-wrap; font-size:9px;">${l.prompt}</div>
-                <div style="background:#eef; padding:5px; border-radius:4px; max-height:60px; overflow-y:auto; white-space:pre-wrap; border-left:2px solid var(--blue); font-size:9px;">${l.response}</div>
+                <div style="display:flex; justify-content:space-between; margin-bottom:5px;"><b style="color:var(--blue);">${escapeHtml(l.engine_type)}</b><span style="opacity:0.6;">${escapeHtml(l.ts)}</span></div>
+                <div style="font-size:9px; color:var(--text-sub); margin-bottom:5px;">Room: ${escapeHtml(l.room_id)} | Model: ${escapeHtml(l.model)}</div>
+                <div style="background:#f8f8f9; padding:5px; border-radius:4px; max-height:60px; overflow-y:auto; margin-bottom:5px; white-space:pre-wrap; font-size:9px;">${escapeHtml(l.prompt)}</div>
+                <div style="background:#eef; padding:5px; border-radius:4px; max-height:60px; overflow-y:auto; white-space:pre-wrap; border-left:2px solid var(--blue); font-size:9px;">${escapeHtml(l.response)}</div>
             </div>
         `).join("");
+    }
+}
+
+async function loadServerLogs(limit = 300) {
+    const res = await fetch(`/admin/server-logs?limit=${limit}`, {
+        headers: { Authorization: `Bearer ${accessToken}` }
+    });
+    if (!res.ok) return;
+    const rows = await res.json();
+    const list = document.getElementById("admin-server-log-list");
+    if (!list) return;
+    list.innerHTML = rows.map((row) => {
+        const stream = String(row?.stream || "stdout");
+        const errorClass = stream === "stderr" ? " error" : "";
+        return `
+            <div class="debug-log-item${errorClass}" style="font-size:10px;">
+                <div style="display:flex; justify-content:space-between; gap:8px; margin-bottom:4px;">
+                    <b style="color:var(--blue);">${escapeHtml(stream.toUpperCase())}</b>
+                    <span style="opacity:0.65;">${escapeHtml(row?.ts || "")}</span>
+                </div>
+                <div style="white-space:pre-wrap; word-break:break-word;">${escapeHtml(row?.line || "")}</div>
+            </div>
+        `;
+    }).join("");
+    list.scrollTop = list.scrollHeight;
+}
+
+async function clearServerLogs() {
+    if (!confirm("서버 로그를 비울까요?")) return;
+    const res = await fetch("/admin/server-logs", {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${accessToken}` }
+    });
+    if (res.ok) {
+        const list = document.getElementById("admin-server-log-list");
+        if (list) list.innerHTML = "";
     }
 }
 

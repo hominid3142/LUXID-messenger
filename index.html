@@ -700,7 +700,7 @@
                         </div>
                         <div class="sub-atab" data-sub="identity" onclick="switchAdminSubTab('identity')">IDENTITY</div>
                         <div class="sub-atab" data-sub="prompt" onclick="switchAdminSubTab('prompt')">PROMPT</div>
-                        <div class="sub-atab" data-sub="debug" onclick="switchAdminSubTab('debug')">DEBUG</div>
+                        <div class="sub-atab" data-sub="debug" onclick="switchAdminSubTab('debug')">LOGS</div>
                     </div>
 
                     <!-- ENGINE 서브 탭 -->
@@ -865,10 +865,23 @@
 
                     <!-- DEBUG 서브 탭 -->
                     <div id="asub-debug" class="admin-sub-content" style="display:none;">
-                        <div class="panel-title">Raw Engine Logs (Latest 50)</div>
-                        <div id="admin-debug-log-list"
-                            style="display:flex; flex-direction:column; gap:10px; max-height:450px; overflow-y:auto; padding:5px;">
-                            <!-- 디버그 로그 항목 삽입부 -->
+                        <div class="panel-title">Engine / Server Logs</div>
+                        <div class="admin-box" style="display:flex; flex-direction:column; gap:10px;">
+                            <div style="display:flex; gap:8px; flex-wrap:wrap;">
+                                <button class="commit-btn-sm" onclick="loadDebugLogs()">REFRESH ENGINE</button>
+                                <button class="commit-btn-sm" onclick="loadServerLogs()">REFRESH SERVER</button>
+                                <button class="shutdown-btn" onclick="clearServerLogs()">CLEAR SERVER LOGS</button>
+                            </div>
+
+                            <div class="panel-label">RAW ENGINE LOGS (AI REQUEST/RESPONSE)</div>
+                            <div id="admin-debug-log-list"
+                                style="display:flex; flex-direction:column; gap:10px; max-height:300px; overflow-y:auto; padding:5px;">
+                            </div>
+
+                            <div class="panel-label">SERVER CONSOLE LOGS (CMD)</div>
+                            <div id="admin-server-log-list"
+                                style="display:flex; flex-direction:column; gap:6px; max-height:300px; overflow-y:auto; padding:5px;">
+                            </div>
                         </div>
                     </div>
                 </div>

@@ -8,6 +8,9 @@ import base64
 import binascii
 import urllib.request
 import logging
+import sys
+import threading
+from collections import deque
 from datetime import datetime, timezone, timedelta
 from typing import List, Optional, Dict, Any
 from pydantic import BaseModel
@@ -58,6 +61,74 @@ COST_PER_1M_TOKENS = 0.15  # Gemini 3.0(Flash) 인풋/아웃풋 통합 평균가
 COST_PER_IMAGE = 0.02  # fal.ai (Grok Imagine 등) 이미지 생성 단가 ($0.02 / image)
 USER_FEED_IMAGE_CAPTION_MODEL = os.environ.get("USER_FEED_IMAGE_CAPTION_MODEL", "gemini-2.5-flash-lite")
 USER_FEED_IMAGE_MAX_BYTES = int(os.environ.get("USER_FEED_IMAGE_MAX_BYTES", str(6 * 1024 * 1024)))
+ADMIN_SERVER_LOG_MAX_LINES = int(os.environ.get("ADMIN_SERVER_LOG_MAX_LINES", "2000"))
+
+server_console_buffer = deque(maxlen=ADMIN_SERVER_LOG_MAX_LINES)
+_server_console_lock = threading.Lock()
+
+
+def _append_server_console(stream: str, line: str):
+    text = str(line or "").rstrip("\r\n")
+    if not text:
+        return
+    row = {
+        "ts": datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S"),
+        "stream": stream,
+        "line": text,
+    }
+    with _server_console_lock:
+        server_console_buffer.append(row)
+
+
+class _ConsoleTee:
+    def __init__(self, base, stream_name: str):
+        self._base = base
+        self._stream_name = stream_name
+        self._pending = ""
+        self._luxid_console_tee = True
+
+    def write(self, data):
+        text = data if isinstance(data, str) else str(data)
+        try:
+            self._base.write(text)
+        except Exception:
+            pass
+
+        self._pending += text
+        while "\n" in self._pending:
+            line, self._pending = self._pending.split("\n", 1)
+            _append_server_console(self._stream_name, line.rstrip("\r"))
+
+        # Prevent unbounded pending buffer for writes without newline.
+        if len(self._pending) > 8000:
+            _append_server_console(self._stream_name, self._pending)
+            self._pending = ""
+        return len(text)
+
+    def flush(self):
+        try:
+            self._base.flush()
+        except Exception:
+            pass
+
+    def isatty(self):
+        try:
+            return self._base.isatty()
+        except Exception:
+            return False
+
+    def __getattr__(self, name):
+        return getattr(self._base, name)
+
+
+def _install_console_capture():
+    if not getattr(sys.stdout, "_luxid_console_tee", False):
+        sys.stdout = _ConsoleTee(sys.stdout, "stdout")
+    if not getattr(sys.stderr, "_luxid_console_tee", False):
+        sys.stderr = _ConsoleTee(sys.stderr, "stderr")
+
+
+_install_console_capture()
 
 
 MAX_LOGIN_FAILS = int(os.environ.get("MAX_LOGIN_FAILS", "5"))
@@ -1794,6 +1865,27 @@ async def admin_get_debug_logs(current_user: User = Depends(get_current_user)):
     return debug_log_buffer
 
 
+@app.get("/admin/server-logs")
+async def admin_get_server_logs(
+    limit: int = Query(200, ge=1, le=2000),
+    current_user: User = Depends(get_current_user),
+):
+    if not current_user or not current_user.is_admin:
+        raise HTTPException(status_code=403)
+    with _server_console_lock:
+        rows = list(server_console_buffer)[-limit:]
+    return rows
+
+
+@app.delete("/admin/server-logs")
+async def admin_clear_server_logs(current_user: User = Depends(get_current_user)):
+    if not current_user or not current_user.is_admin:
+        raise HTTPException(status_code=403)
+    with _server_console_lock:
+        server_console_buffer.clear()
+    return {"status": "success"}
+
+
 @app.post("/admin/room/{room_id}/ghost-write")
 async def admin_ghost_write(room_id: int, data: dict = Body(...), current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     if not current_user or not current_user.is_admin:
@@ -2870,8 +2962,16 @@ async def websocket_endpoint(websocket: WebSocket, room_id: int):
 
                 if v_state['activation_pending']:
                     db_sync = SessionLocal()
-                    await sync_eve_life(room_id, db_sync)
-                    db_sync.close()
+                    try:
+                        await sync_eve_life(room_id, db_sync)
+                    except Exception as sync_err:
+                        print(f"sync_eve_life error(room={room_id}): {sync_err}")
+                        try:
+                            db_sync.rollback()
+                        except Exception:
+                            pass
+                    finally:
+                        db_sync.close()
 
                     async with v_state['lock']:
                         v_state['status'] = "online"
@@ -2899,18 +2999,26 @@ async def websocket_endpoint(websocket: WebSocket, room_id: int):
                         v_state['input_pocket'].clear()
 
                         db = SessionLocal()
-                        db_room = db.query(ChatRoom).filter(
-                            ChatRoom.id == room_id).first()
-                        if db_room:
-                            db_room.history = v_state['ram_history'][-100:]
-                            _record_confession_event(
-                                db=db,
-                                room=db_room,
-                                current_user=current_user_obj,
-                                message_text=merged,
-                            )
-                            db.commit()
-                        db.close()
+                        try:
+                            db_room = db.query(ChatRoom).filter(
+                                ChatRoom.id == room_id).first()
+                            if db_room:
+                                db_room.history = v_state['ram_history'][-100:]
+                                _record_confession_event(
+                                    db=db,
+                                    room=db_room,
+                                    current_user=current_user_obj,
+                                    message_text=merged,
+                                )
+                                db.commit()
+                        except Exception as persist_err:
+                            print(f"chat input persist error(room={room_id}): {persist_err}")
+                            try:
+                                db.rollback()
+                            except Exception:
+                                pass
+                        finally:
+                            db.close()
 
                     if v_state['status'] == "online" and v_state['is_ticking']:
                         if (
@@ -2932,18 +3040,34 @@ async def websocket_endpoint(websocket: WebSocket, room_id: int):
                     current_tick = v_state['tick_counter']
                     consecutive_speaks = v_state['consecutive_speaks']
 
-                db = SessionLocal()
-                db_room = db.query(ChatRoom).filter(ChatRoom.id == room_id).first()
-                if not db_room: 
-                    db.close()
-                    continue
-
-                if db_room.is_frozen:
-                    db.close()
-                    continue
-
-                target_model = db_room.model_id
-                prompts = {pt.key: pt.template for pt in db.query(PromptTemplate).all()}
+                db = None
+                db_room = None
+                cached_model = v_state.get("cached_model_id")
+                target_model = cached_model or MODEL_ID
+                prompts = v_state.get("cached_prompts", {}) or {}
+                try:
+                    db = SessionLocal()
+                    db_room = db.query(ChatRoom).filter(ChatRoom.id == room_id).first()
+                    if db_room and db_room.is_frozen:
+                        db.close()
+                        continue
+                    if db_room:
+                        target_model = db_room.model_id or target_model
+                        prompts = {pt.key: pt.template for pt in db.query(PromptTemplate).all()}
+                        v_state["cached_model_id"] = target_model
+                        v_state["cached_prompts"] = prompts
+                except Exception as room_load_err:
+                    print(f"room load error(room={room_id}): {room_load_err}")
+                    if db:
+                        try:
+                            db.rollback()
+                        except Exception:
+                            pass
+                        try:
+                            db.close()
+                        except Exception:
+                            pass
+                        db = None
 
                 inference_res = None
                 tokens_used = 0
@@ -3031,11 +3155,19 @@ async def websocket_endpoint(websocket: WebSocket, room_id: int):
                     tokens_used = tokens
                     
                     # 상태 파라미터를 데이터베이스에 동기화
-                    db_room.v_likeability = v_state['v_likeability']
-                    db_room.v_erotic = v_state['v_erotic']
-                    db_room.v_v_mood = v_state['v_v_mood']
-                    db_room.v_relationship = v_state['v_relationship']
-                    db.commit()
+                    if db_room and db:
+                        db_room.v_likeability = v_state['v_likeability']
+                        db_room.v_erotic = v_state['v_erotic']
+                        db_room.v_v_mood = v_state['v_v_mood']
+                        db_room.v_relationship = v_state['v_relationship']
+                        try:
+                            db.commit()
+                        except Exception as short_commit_err:
+                            print(f"short state commit error(room={room_id}): {short_commit_err}")
+                            try:
+                                db.rollback()
+                            except Exception:
+                                pass
                     
                     # AI가 오프라인 전환을 원하는 경우 처리
                     if v_state.get('ai_wants_offline', False):
@@ -3060,7 +3192,7 @@ async def websocket_endpoint(websocket: WebSocket, room_id: int):
                             v_state['last_user_ts']).total_seconds()
                         if time_since_user < 20 or current_tick % 3 == 0:
                             # [v3.0.0] 통합 기억용 persona 로드
-                            db_persona_utt = db_room.persona
+                            db_persona_utt = db_room.persona if db_room else None
                             inference_res, tokens = await run_utterance(
                                 v_state, p_dict, room_id,
                                 custom_prompt=prompts.get('utterance'),
@@ -3072,9 +3204,17 @@ async def websocket_endpoint(websocket: WebSocket, room_id: int):
                         else:
                             inference_res = {"action": "WAIT"}
 
-                if tokens_used > 0:
-                    update_user_tokens(db, user_id, tokens_used)
-                db.close()
+                if tokens_used > 0 and db:
+                    try:
+                        update_user_tokens(db, user_id, tokens_used)
+                    except Exception as token_update_err:
+                        print(f"token update error(room={room_id}): {token_update_err}")
+                        try:
+                            db.rollback()
+                        except Exception:
+                            pass
+                if db:
+                    db.close()
 
                 async with v_state['lock']:
                     current_status_info = {
@@ -3116,12 +3256,20 @@ async def websocket_endpoint(websocket: WebSocket, room_id: int):
                                 })
 
                         db = SessionLocal()
-                        db_room = db.query(ChatRoom).filter(
-                            ChatRoom.id == room_id).first()
-                        if db_room:
-                            db_room.history = v_state['ram_history'][-100:]
-                            db.commit()
-                        db.close()
+                        try:
+                            db_room = db.query(ChatRoom).filter(
+                                ChatRoom.id == room_id).first()
+                            if db_room:
+                                db_room.history = v_state['ram_history'][-100:]
+                                db.commit()
+                        except Exception as history_save_err:
+                            print(f"history save error(room={room_id}): {history_save_err}")
+                            try:
+                                db.rollback()
+                            except Exception:
+                                pass
+                        finally:
+                            db.close()
                     else:
                         if inference_res and inference_res.get(
                                 'action') == "WAIT":
