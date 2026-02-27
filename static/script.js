@@ -510,6 +510,7 @@ function switchAdminTab(tab) {
     const factoryView = document.getElementById("admin-factory-view");
     const views = {
         "status": document.getElementById("admin-status-view"),
+        "logs": document.getElementById("admin-status-view"),
         "users": document.getElementById("admin-user-view"),
         "notice": document.getElementById("admin-notice-view"),
         "batch": batchView || factoryView,
@@ -524,6 +525,7 @@ function switchAdminTab(tab) {
     if (views[tab]) views[tab].style.display = "block";
 
     const atabStatus = document.getElementById("atab-status");
+    const atabLogs = document.getElementById("atab-logs");
     const atabUsers = document.getElementById("atab-users");
     const atabNotice = document.getElementById("atab-notice");
     const atabBatch = document.getElementById("atab-batch");
@@ -531,19 +533,21 @@ function switchAdminTab(tab) {
     const atabCustom = document.getElementById("atab-custom");
 
     if (atabStatus) atabStatus.classList.toggle("active", tab === "status");
+    if (atabLogs) atabLogs.classList.toggle("active", tab === "logs");
     if (atabUsers) atabUsers.classList.toggle("active", tab === "users");
     if (atabNotice) atabNotice.classList.toggle("active", tab === "notice");
     if (atabBatch) atabBatch.classList.toggle("active", tab === "batch" || tab === "factory");
     if (atabFactory) atabFactory.classList.toggle("active", tab === "factory" || tab === "batch");
     if (atabCustom) atabCustom.classList.toggle("active", tab === "custom");
 
-    if (tab !== "status") {
+    if (tab !== "status" && tab !== "logs") {
         stopAdminLogPolling();
     } else if (currentAdminSubTab === "debug") {
         startAdminLogPolling();
     }
 
     if (tab === "status") backToEveBrowser();
+    if (tab === "logs") openAdminLogsPane();
     if (tab === "users") loadAdminUsers();
 }
 
@@ -1117,6 +1121,18 @@ async function inspectEve(roomId, name) {
 
     switchAdminSubTab("engine");
     await fetchAndSyncVolatile(roomId);
+}
+
+function openAdminLogsPane() {
+    const browser = document.getElementById("admin-eve-browser");
+    const control = document.getElementById("admin-eve-control");
+    const title = document.getElementById("admin-controlled-eve-name");
+
+    if (browser) browser.style.display = "none";
+    if (control) control.style.display = "block";
+    if (title) title.innerText = "SYSTEM LOGS";
+
+    switchAdminSubTab("debug");
 }
 
 async function fetchAndSyncVolatile(roomId) {
