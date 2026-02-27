@@ -8,7 +8,7 @@ from dotenv import load_dotenv
 from google import genai
 from sqlalchemy.orm import Session
 from memory import KST, get_date_info, get_volatile_state, get_shared_memory_context, get_user_registry_context, build_dynamic_context, tick_info_slots, DIA_CATEGORIES
-from models import ChatRoom, Persona, EveRelationship
+from models import ChatRoom, Persona, EveRelationship, User
 from auth_utils import update_user_tokens
 
 # .env 파일 로드
@@ -96,6 +96,179 @@ def get_schedule_context(daily_schedule):
     return "일과 형식 오류"
 
 
+def _as_int_or_none(value):
+    try:
+        if value is None:
+            return None
+        return int(value)
+    except Exception:
+        return None
+
+
+def build_persona_traits(source, v_state: dict | None = None) -> dict:
+    """
+    Canonical persona trait package used by all prompt builders.
+    """
+    if isinstance(source, dict) and isinstance(source.get("persona_traits"), dict):
+        source = dict(source.get("persona_traits") or {})
+
+    if isinstance(source, dict):
+        getv = source.get
+        meta = getv("meta", {}) if isinstance(getv("meta", {}), dict) else {}
+        visual = getv("visual", {}) if isinstance(getv("visual", {}), dict) else {}
+        lifestyle = getv("lifestyle", {}) if isinstance(getv("lifestyle", {}), dict) else {}
+        state_src = getv("state", {}) if isinstance(getv("state", {}), dict) else {}
+
+        profile_details = getv("profile_details", {}) if isinstance(getv("profile_details", {}), dict) else {}
+        daily_schedule = getv("daily_schedule", None)
+        if daily_schedule is None:
+            daily_schedule = lifestyle.get("daily_schedule")
+        if not isinstance(daily_schedule, (dict, list)):
+            daily_schedule = {}
+
+        feed_times = getv("feed_times", None)
+        if feed_times is None:
+            feed_times = lifestyle.get("feed_times")
+        if not isinstance(feed_times, list):
+            feed_times = []
+
+        name = str(getv("name", "") or "").strip()
+        age = _as_int_or_none(getv("age"))
+        gender = str(getv("gender", "") or "").strip() or None
+        mbti = str(getv("mbti", "") or "").strip() or None
+        persona_id = _as_int_or_none(getv("id"))
+        owner_id = _as_int_or_none(getv("owner_id"))
+        if persona_id is None:
+            persona_id = _as_int_or_none(meta.get("persona_id"))
+        if owner_id is None:
+            owner_id = _as_int_or_none(meta.get("owner_id"))
+        current_location_id = _as_int_or_none(getv("current_location_id"))
+        if current_location_id is None:
+            current_location_id = _as_int_or_none(visual.get("current_location_id"))
+
+        traits = getv("traits", {}) if isinstance(getv("traits", {}), dict) else {}
+        p_seriousness = _as_int_or_none(getv("p_seriousness"))
+        p_friendliness = _as_int_or_none(getv("p_friendliness"))
+        p_rationality = _as_int_or_none(getv("p_rationality"))
+        p_slang = _as_int_or_none(getv("p_slang"))
+        if p_seriousness is None:
+            p_seriousness = _as_int_or_none(traits.get("seriousness"))
+        if p_friendliness is None:
+            p_friendliness = _as_int_or_none(traits.get("friendliness"))
+        if p_rationality is None:
+            p_rationality = _as_int_or_none(traits.get("rationality"))
+        if p_slang is None:
+            p_slang = _as_int_or_none(traits.get("slang"))
+
+        hook = str(getv("hook", "") or "").strip()
+        if not hook:
+            hook = str(profile_details.get("hook", "") or "").strip()
+
+        profile_image_url = str(getv("profile_image_url", "") or "").strip() or None
+        if not profile_image_url:
+            profile_image_url = str(visual.get("profile_image_url", "") or "").strip() or None
+        image_prompt = str(getv("image_prompt", "") or "").strip() or None
+        if not image_prompt:
+            image_prompt = str(visual.get("image_prompt", "") or "").strip() or None
+        face_base_url = str(getv("face_base_url", "") or "").strip() or None
+        if not face_base_url:
+            face_base_url = str(visual.get("face_base_url", "") or "").strip() or None
+
+        rel_category = str(getv("relationship_category", "") or "").strip() or None
+        if not rel_category:
+            rel_category = str(state_src.get("relationship_category", "") or "").strip() or None
+        likeability = _as_int_or_none(state_src.get("likeability"))
+        erotic = _as_int_or_none(state_src.get("erotic"))
+        mood = _as_int_or_none(state_src.get("mood"))
+        relationship = _as_int_or_none(state_src.get("relationship"))
+        last_schedule_date = str(getv("last_schedule_date", "") or "").strip() or None
+    else:
+        profile_details = getattr(source, "profile_details", {}) if isinstance(getattr(source, "profile_details", {}), dict) else {}
+        daily_schedule = getattr(source, "daily_schedule", {}) if isinstance(getattr(source, "daily_schedule", {}), (dict, list)) else {}
+        feed_times = getattr(source, "feed_times", []) if isinstance(getattr(source, "feed_times", []), list) else []
+        name = str(getattr(source, "name", "") or "").strip()
+        age = _as_int_or_none(getattr(source, "age", None))
+        gender = str(getattr(source, "gender", "") or "").strip() or None
+        mbti = str(getattr(source, "mbti", "") or "").strip() or None
+        persona_id = _as_int_or_none(getattr(source, "id", None))
+        owner_id = _as_int_or_none(getattr(source, "owner_id", None))
+        current_location_id = _as_int_or_none(getattr(source, "current_location_id", None))
+        p_seriousness = _as_int_or_none(getattr(source, "p_seriousness", None))
+        p_friendliness = _as_int_or_none(getattr(source, "p_friendliness", None))
+        p_rationality = _as_int_or_none(getattr(source, "p_rationality", None))
+        p_slang = _as_int_or_none(getattr(source, "p_slang", None))
+        rel_category = str(getattr(source, "relationship_category", "") or "").strip() or None
+        hook = str(profile_details.get("hook", "") or "").strip()
+        profile_image_url = str(getattr(source, "profile_image_url", "") or "").strip() or None
+        image_prompt = str(getattr(source, "image_prompt", "") or "").strip() or None
+        face_base_url = str(getattr(source, "face_base_url", "") or "").strip() or None
+        likeability = None
+        erotic = None
+        mood = None
+        relationship = None
+        last_schedule_raw = getattr(source, "last_schedule_date", None)
+        if hasattr(last_schedule_raw, "strftime"):
+            last_schedule_date = last_schedule_raw.strftime("%Y-%m-%d %H:%M:%S")
+        else:
+            last_schedule_date = str(last_schedule_raw or "").strip() or None
+
+    bundle = {
+        "id": persona_id,
+        "owner_id": owner_id,
+        "name": name or None,
+        "age": age,
+        "gender": gender,
+        "mbti": mbti,
+        "hook": hook or None,
+        "profile_details": profile_details,
+        "traits": {
+            "seriousness": p_seriousness,
+            "friendliness": p_friendliness,
+            "rationality": p_rationality,
+            "slang": p_slang,
+        },
+        "lifestyle": {
+            "daily_schedule": daily_schedule,
+            "feed_times": list(feed_times),
+            "last_schedule_date": last_schedule_date,
+        },
+        "visual": {
+            "profile_image_url": profile_image_url,
+            "image_prompt": image_prompt,
+            "face_base_url": face_base_url,
+            "current_location_id": current_location_id,
+        },
+        "meta": {
+            "persona_id": persona_id,
+            "owner_id": owner_id,
+        },
+        "state": {
+            "likeability": likeability,
+            "erotic": erotic,
+            "mood": mood,
+            "relationship": relationship,
+            "relationship_category": rel_category,
+        },
+    }
+
+    if isinstance(v_state, dict):
+        likeability_v = _as_int_or_none(v_state.get("v_likeability"))
+        erotic_v = _as_int_or_none(v_state.get("v_erotic"))
+        mood_v = _as_int_or_none(v_state.get("v_v_mood"))
+        relationship_v = _as_int_or_none(v_state.get("v_relationship"))
+        if likeability_v is not None:
+            bundle["state"]["likeability"] = likeability_v
+        if erotic_v is not None:
+            bundle["state"]["erotic"] = erotic_v
+        if mood_v is not None:
+            bundle["state"]["mood"] = mood_v
+        if relationship_v is not None:
+            bundle["state"]["relationship"] = relationship_v
+        if not bundle["state"]["relationship_category"]:
+            bundle["state"]["relationship_category"] = str(v_state.get("relationship_category", "") or "").strip() or None
+    return bundle
+
+
 # ---------------------------------------------------------
 # 3. 3중 인지 엔진 (순차적 실행 보장)
 # ---------------------------------------------------------
@@ -108,7 +281,7 @@ async def run_medium_thinking(v_state, p_dict, room_id, custom_prompt=None, mode
     history_context = json.dumps(v_state['ram_history'][-slice_count:])
     short_logs = "\n".join(v_state['short_term_logs'])
 
-    profile_details = p_dict.get('profile_details', {})
+    persona_traits = build_persona_traits(p_dict, v_state)
     schedule_summary = json.dumps(p_dict.get('daily_schedule', []))
 
     date_info = get_date_info()
@@ -123,13 +296,8 @@ async def run_medium_thinking(v_state, p_dict, room_id, custom_prompt=None, mode
     
     # [v1.4.2 복구] 사용자의 정교한 원본 프롬프트를 Core 고정
     core_prompt = f"""
-    [나의 정체성]
-    - 어필: {profile_details.get('hook')}
-    - 소개: {profile_details.get('intro')}
-    - 관심사: {profile_details.get('interests')}
-    - 직업/활동: {profile_details.get('job')}
-    - 관계 목표: {profile_details.get('goal')}
-    - TMI: {profile_details.get('tmi')}
+    [이브 특성 패키지]
+    {json.dumps(persona_traits, ensure_ascii=False)}
 
     [현재 정보]
     - 일시: {date_info['full_str']}
@@ -145,11 +313,6 @@ async def run_medium_thinking(v_state, p_dict, room_id, custom_prompt=None, mode
     - 현재 관계: {v_state.get('relationship_category', '낯선 사람')}
     - 통합 기억 (다른 사람들과의 대화에서 축적된 기억): {shared_memory_ctx}
     - 사용자 목록: {user_registry_ctx}
-
-    [페르소나]
-    - 이름: {p_dict['name']} / MBTI: {p_dict['mbti']}
-    - 성향: 진지함 {p_dict['p_seriousness']}/10, 친근함 {p_dict['p_friendliness']}/10, 채팅체 {p_dict['p_slang']}/10, 상식 {p_dict['p_rationality']}/10
-    - 상태: 호감 {v_state['v_likeability']}/100, 야함 {v_state['v_erotic']}/100, 기분 {v_state['v_v_mood']}/100, 관계 {v_state['v_relationship']}/100
 
     [임무]
     1. 중기 사실 기록: 지금까지 대화 핵심을 육하원칙에 따라 "단 1 문장"으로 객관적 요약.
@@ -229,6 +392,8 @@ async def run_short_thinking(v_state, p_dict, room_id, custom_prompt=None, model
     slice_count = max(new_msgs_count, 10)
     history_context = json.dumps(v_state['ram_history'][-slice_count:])
     schedule_context = get_schedule_context(p_dict.get('daily_schedule', []))
+    persona_traits = build_persona_traits(p_dict, v_state)
+    eve_name = str(persona_traits.get("name") or p_dict.get("name") or "Eve")
 
     date_info = get_date_info()
     # [v3.5.0] DIA: 현재 활성 정보 슬롯 현황
@@ -240,7 +405,7 @@ async def run_short_thinking(v_state, p_dict, room_id, custom_prompt=None, model
 
     # [v1.4.2 복구] 원본 프롬프트 Core 고정 + [v3.5.0] DIA 임무 추가
     core_prompt = f"""
-    당신은 '{p_dict['name']}'의 [전술지휘소]입니다.
+    당신은 '{eve_name}'의 [전술지휘소]입니다.
 
     [지침]
     - 상위 전략: {v_state['medium_term_diagnosis']}
@@ -249,11 +414,8 @@ async def run_short_thinking(v_state, p_dict, room_id, custom_prompt=None, model
     - 최근 대화: {history_context}
     - 팩트: {json.dumps(v_state['fact_warehouse'])}
 
-    [페르소나 및 상태]
-    - MBTI: {p_dict['mbti']}
-    - 성향: 진지함 {p_dict['p_seriousness']}/10, 친근함 {p_dict['p_friendliness']}/10, 채팅체 {p_dict['p_slang']}/10, 상식 {p_dict['p_rationality']}/10
-    - 현재 상태: 호감 {v_state['v_likeability']}/100, 야함 {v_state['v_erotic']}/100, 기분 {v_state['v_v_mood']}/100, 관계 {v_state['v_relationship']}/100
-    - 사용자와의 관계: {v_state.get('relationship_category', '낯선 사람')}
+    [이브 특성 패키지]
+    {json.dumps(persona_traits, ensure_ascii=False)}
 
     [임무]
     1. 단기 느낌 기록: 현재 일과와 대화 상황을 보고 나의 느낌을 1인칭의 단 하나의 짧은 문장으로 요약.
@@ -371,21 +533,17 @@ async def run_short_thinking(v_state, p_dict, room_id, custom_prompt=None, model
 
 
 async def generate_eve_nickname(p_dict):
-    """제미나이를 이용해 이브의 성격과 직업에 어울리는 센스있는 닉네임을 생성합니다."""
+    """제미나이를 이용해 이브의 성향에 어울리는 센스있는 닉네임을 생성합니다."""
+    persona_traits = build_persona_traits(p_dict)
     prompt = f"""
     당신은 네이밍 전문가입니다. 다음 프로필을 가진 사람에게 어울리는 데이팅 앱(Tinder 스타일) 닉네임을 딱 하나만 지어주세요.
 
-    [프로필]
-    - 나이/성별: {p_dict['age']}세, {p_dict['gender']}
-    - 직업: {p_dict.get('job', '직장인')}
-    - 자기소개/성격: {p_dict.get('intro', '밝은 성격')}
-    - MBTI: {p_dict['mbti']}
-    - 성향: 진지함{p_dict['p_seriousness']}/10, 친근함{p_dict['p_friendliness']}/10, 상식{p_dict['p_rationality']}/10, 채팅체{p_dict['p_slang']}/10
+    [이브 특성 패키지]
+    {json.dumps(persona_traits, ensure_ascii=False)}
 
     [규칙]
     1. 2~5글자 내외의 짧고 임팩트 있는 한글 닉네임 (영어 섞여도 됨).
-    2. 직업이나 성격, 취미가 은유적으로 드러나면 좋음.
-    3. 너무 흔한 닉네임(행복한사람, 즐거운하루 등)은 피할 것.
+    2. 너무 흔한 닉네임(행복한사람, 즐거운하루 등)은 피할 것.
     4. 이모지는 사용하지 말 것.
     5. 오직 닉네임 단어 하나만 출력할 것. 설명 금지. 따옴표 금지.
 
@@ -406,39 +564,13 @@ async def generate_eve_nickname(p_dict):
 async def generate_eve_visuals(p_dict):
     # [Hardcoded Prompt Mode]
     # 사용자의 요청으로 AI 프롬프트 생성을 우회하고 하드코딩된 템플릿을 사용합니다.
-    hardcoded_prompt = f"candid iPhone raw photo, ultra realistic, low quality, natural random Korean SNS profile image of average {p_dict['mbti']} {p_dict['age']} years old Korean {'man' if p_dict['gender'] == '남성' else 'woman'}, ultrarealistic texture, low quality snapshot, casual daily look"
+    persona_traits = build_persona_traits(p_dict)
+    age = persona_traits.get("age") if persona_traits.get("age") is not None else p_dict.get("age")
+    mbti = str(persona_traits.get("mbti") or p_dict.get("mbti") or "")
+    gender = str(persona_traits.get("gender") or p_dict.get("gender") or "")
+    gender_token = "man" if gender == "남성" else "woman"
+    hardcoded_prompt = f"candid iPhone raw photo, ultra realistic, low quality, natural random Korean SNS profile image of average {mbti} {age} years old Korean {gender_token}, ultrarealistic texture, low quality snapshot, casual daily look"
     return hardcoded_prompt, 0
-
-    """제미나이를 이용해 이브의 프로필을 바탕으로 최적의 이미지 생성 프롬프트를 작성합니다."""
-    prompt = f"""
-    당신은 '리얼리즘 포토그래퍼'입니다. 
-    다음 인물의 **카카오톡/인스타그램 프로필 사진**으로 쓸법한, 꾸미지 않은 듯 자연스러운 일상 사진(남친짤/여친짤) 프롬프트를 구상하세요.
-
-    [인물 데이터]
-    - 나이/성별: {p_dict['age']}세, {p_dict['gender']}
-    - MBTI: {p_dict['mbti']}
-
-    [작성 규칙]
-    1. 반드시 다음 문구로 시작: "candid iPhone raw photo, ultra realistic, low quality, natural random Korean SNS profile image of average {p_dict['mbti']} {p_dict['age']} years old Korean {'man' if p_dict['gender'] == '남성' else 'woman'},"
-    2. 문구 중간이나 끝에 반드시 다음 키워드들을 포함: "ultrarealistic texture, low qualoty snapshot"
-    3. **화질/필터**: "amateur photography, slight motion blur, film grain, flash photography" 등 실제 폰카 느낌을 주는 키워드 활용.
-    4. 한글 금지. 영어 문장 하나로 출력.
-    5. 옷에 대한 언급 금지. 
-    6. 틴더 앱에 올릴 만한 느낌의, 얼굴이 강조된 극사실적인 질갑의 사진
-
-    
-    [결과]
-    """
-    try:
-        res = await client.aio.models.generate_content(
-            model=MODEL_ID,
-            contents=prompt)
-        image_prompt = res.text.strip().replace('"', '').replace("'", "").replace('\n', ' ')
-        return image_prompt, res.usage_metadata.total_token_count
-    except Exception as e:
-        print(f"Visual Generation Error: {e}")
-        fallback = f"candid iPhone raw photo, ultra realistic, low quality, natural random Korean SNS profile image of average {p_dict['mbti']} {p_dict['age']} years old Korean {'man' if p_dict['gender'] == '남성' else 'woman'}, ultrarealistic texture, low quality snapshot"
-        return fallback, 0
 
 
 async def run_utterance(v_state, p_dict, room_id, custom_prompt=None, model_id=None, current_user_id=None, persona=None):
@@ -451,12 +583,16 @@ async def run_utterance(v_state, p_dict, room_id, custom_prompt=None, model_id=N
     
     # [v3.5.0] DIA: 동적 컨텍스트 조립
     dynamic_ctx, active_slots = build_dynamic_context(v_state, p_dict, persona, current_user_id)
+    persona_traits = build_persona_traits(p_dict, v_state)
     
     core_prompt = f"""
     당신은 한국인입니다.
     현재 일시: {date_info['full_str']} {now_ts}
 
     {dynamic_ctx}
+
+    [이브 특성 패키지]
+    {json.dumps(persona_traits, ensure_ascii=False)}
 
     [대화] {history_context}
 
@@ -465,7 +601,7 @@ async def run_utterance(v_state, p_dict, room_id, custom_prompt=None, model_id=N
     - 꼭 필요한 이유가 없다면 반드시 SPEAK을 선택한다.
     - [전술]을 1순위로 하되 유연하게 대처.
     - 채팅체 수치가 높을 수록 초성체를 많이 쓴다.
-    - [감정] 항목을 참고한다.
+    - [감정] 항목과 일치하는 반응만 출력한다.
     - 대화 흐름과 성격에 어울리게 짧은 메시지 위주로.
 
     JSON 응답 형식 (필수):
@@ -498,6 +634,112 @@ async def run_utterance(v_state, p_dict, room_id, custom_prompt=None, model_id=N
 
 
 # ---------------------------------------------------------
+# Rollover context helpers (persona-wide)
+# ---------------------------------------------------------
+def _coerce_msg_dt(value: str, now: datetime) -> datetime | None:
+    if not value:
+        return None
+    v = str(value).strip()
+    if not v:
+        return None
+    patterns = [
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%d %H:%M",
+        "%Y/%m/%d %H:%M:%S",
+        "%Y/%m/%d %H:%M",
+        "%H:%M:%S",
+        "%H:%M",
+        "%I:%M:%S %p",
+        "%I:%M %p",
+    ]
+    for pat in patterns:
+        try:
+            parsed = datetime.strptime(v, pat)
+        except Exception:
+            continue
+        if pat.startswith("%Y"):
+            return parsed.replace(tzinfo=KST)
+        candidate = now.replace(hour=parsed.hour, minute=parsed.minute, second=parsed.second, microsecond=0)
+        if candidate > now + timedelta(minutes=5):
+            candidate = candidate - timedelta(days=1)
+        return candidate
+    return None
+
+
+def _as_history_list(raw) -> list:
+    if isinstance(raw, list):
+        return raw
+    if isinstance(raw, str):
+        try:
+            decoded = json.loads(raw)
+            if isinstance(decoded, list):
+                return decoded
+        except Exception:
+            return []
+    return []
+
+
+def _extract_recent_dialogue_12h(history_raw, now: datetime, limit: int = 24) -> list[dict]:
+    history = _as_history_list(history_raw)
+    if not history:
+        return []
+    cutoff = now - timedelta(hours=12)
+    rows = []
+    for msg in history[-140:]:
+        if not isinstance(msg, dict):
+            continue
+        role = str(msg.get("role") or "").strip().lower()
+        if role not in ("user", "assistant"):
+            continue
+        text = str(msg.get("content") or "").strip()
+        if not text:
+            continue
+        raw_ts = msg.get("timestamp") or msg.get("ts") or msg.get("time") or ""
+        dt = _coerce_msg_dt(raw_ts, now)
+        if dt is not None and dt < cutoff:
+            continue
+        rows.append({
+            "role": "user" if role == "user" else "eve",
+            "text": text[:220],
+            "ts": str(raw_ts)[:32],
+        })
+    return rows[-limit:]
+
+
+def _collect_persona_rollover_context(db: Session, persona_id: int, now: datetime) -> tuple[list[ChatRoom], list[dict], list[str]]:
+    rooms = db.query(ChatRoom).filter(ChatRoom.persona_id == persona_id).all()
+    user_contexts: list[dict] = []
+    aggregated_logs: list[str] = []
+
+    for room in rooms:
+        owner = room.owner or db.query(User).filter(User.id == room.owner_id).first()
+        owner_name = (owner.display_name or owner.username) if owner else f"user-{room.owner_id}"
+        v_room = volatile_memory.get(room.id, {}) if isinstance(volatile_memory.get(room.id, {}), dict) else {}
+        medium_logs = [str(x).strip() for x in list(v_room.get("medium_term_logs", []) or []) if str(x or "").strip()][-8:]
+
+        for log in medium_logs:
+            aggregated_logs.append(f"[{owner_name}] {log}")
+
+        recent_12h = _extract_recent_dialogue_12h(room.history, now, limit=24)
+        for msg in recent_12h[-6:]:
+            aggregated_logs.append(f"[{owner_name}:{msg['role']}] {msg['text']}")
+
+        user_contexts.append({
+            "user_id": owner.id if owner else room.owner_id,
+            "user_name": owner_name,
+            "relationship_category": str(room.relationship_category or "낯선 사람"),
+            "relationship_summary_3line": str(getattr(room, "relationship_summary_3line", "") or ""),
+            "romance_state": str(getattr(room, "romance_state", "싱글") or "싱글"),
+            "romance_partner_label": str(getattr(room, "romance_partner_label", "") or ""),
+            "recent_dialogue_12h": recent_12h,
+            "medium_summaries": medium_logs,
+            "fact_warehouse": list(room.fact_warehouse or [])[-20:],
+        })
+
+    return rooms, user_contexts, aggregated_logs[-60:]
+
+
+# ---------------------------------------------------------
 # [v1.9.3] 스케줄러를 위한 라이프사이클 동기화 함수 (Main -> Engine 이동)
 # ---------------------------------------------------------
 async def sync_eve_life(room_id, db: Session):
@@ -507,6 +749,7 @@ async def sync_eve_life(room_id, db: Session):
 
     p = room.persona
     v_state = get_volatile_state(room_id, room)
+    persona_traits = build_persona_traits(p)
 
     last_date = p.last_schedule_date.replace(
         tzinfo=KST) if p.last_schedule_date else datetime.now(KST) - timedelta(
@@ -516,7 +759,9 @@ async def sync_eve_life(room_id, db: Session):
     if last_date.date() == now.date():
         return None
 
-    medium_logs = v_state.get('medium_term_logs', [])
+    persona_rooms, user_contexts, persona_logs = _collect_persona_rollover_context(db, p.id, now)
+    if not persona_rooms:
+        persona_rooms = [room]
     old_schedule_data = p.daily_schedule
     
     # [Fix] JSON Serialization for old_schedule
@@ -536,19 +781,23 @@ async def sync_eve_life(room_id, db: Session):
     어제의 날짜: {date_info_yesterday['full_str']}
     오늘의 날짜: {date_info_now['full_str']}
 
+    [이브 특성 패키지]
+    {json.dumps(persona_traits, ensure_ascii=False)}
+
     [어제의 일과] {json.dumps(old_schedule, ensure_ascii=False)}
-    [어제의 사건/생각들] {json.dumps(medium_logs[-5:] if medium_logs else "특별한 일 없음", ensure_ascii=False)}
+    [어제의 사건/생각들] {json.dumps(persona_logs if persona_logs else "특별한 일 없음", ensure_ascii=False)}
+    [사용자별 관계/대화 컨텍스트] {json.dumps(user_contexts, ensure_ascii=False)}
 
     [임무]
-    1. 어제의 일기: 어제의 일과와 사건들을 섞어서 1인칭 시점으로 짧은 일기를 작성하세요. (3문장 이내)
+    1. 어제의 일기: 어제의 일과와 사건들, 사용자별 관계/대화 컨텍스트를 반영해 1인칭 시점으로 짧은 일기를 작성하세요. (3문장 이내)
        - 일기의 공개 여부(is_public): 남들에게 공유해도 될 내용이면 true, 사적인 내용이면 false.
     2. 어제의 일과 이벤트: 어제 하루 동안 실제로 있었던 일 2~4개를 구체적으로 작성하세요.
        - 일과표에 기반하되, 약간의 변형이나 예상치 못한 일도 포함하세요.
        - 각 이벤트의 공개 여부(is_public): 다른 사람에게 말해도 되는 일상적인 일이면 true, 사적인 일이면 false.
     3. 오늘의 일과: 오늘({date_info_now['full_str']})을 위한 간단한 일과를 요일과 공휴일 여부를 고려하여 작성하세요.
-       - 기상 시간 (wake_time): 07:00~09:00 사이
+       - 기상 시간 (wake_time): HH:MM 형식의 시간
        - 오늘 할 일 (daily_tasks): 1~3개의 주요 활동 (반드시 'HH:MM 활동내용' 형식으로 시간을 포함할 것)
-       - 취침 시간 (sleep_time): 22:00~24:00 사이
+       - 취침 시간 (sleep_time): HH:MM 형식의 시간
 
     JSON 응답:
     {{
@@ -559,9 +808,9 @@ async def sync_eve_life(room_id, db: Session):
             {{"event": "저녁에 엄마한테 전화가 와서 30분 통화했다", "is_public": false}}
         ],
         "new_schedule": {{
-            "wake_time": "07:30",
-            "daily_tasks": ["10:00 활동1", "14:00 활동2", "18:00 활동3"],
-            "sleep_time": "23:00"
+            "wake_time": "HH:MM",
+            "daily_tasks": ["HH:MM 활동1", "HH:MM 활동2", "HH:MM 활동3"],
+            "sleep_time": "HH:MM"
         }}
     }}
     """
@@ -588,15 +837,17 @@ async def sync_eve_life(room_id, db: Session):
                 "date": last_date.strftime('%Y-%m-%d'),
                 "content": diary_entry
             })
-            p.shared_journal = current_journal[-30:]  # 최근 30일만 유지
+            p.shared_journal = current_journal
             
-            # 기존 ChatRoom.diaries에도 호환성을 위해 저장
-            current_diaries = list(room.diaries) if room.diaries else []
-            current_diaries.append({
+            # 모든 사용자 방에 같은 일기를 동기화 (이브 1명당 일기 1개 원칙)
+            diary_item = {
                 "date": last_date.strftime('%Y-%m-%d'),
                 "content": diary_entry
-            })
-            room.diaries = current_diaries[-30:]
+            }
+            for persona_room in persona_rooms:
+                current_diaries = list(persona_room.diaries) if persona_room.diaries else []
+                current_diaries.append(diary_item)
+                persona_room.diaries = current_diaries
 
             db.commit()
 
@@ -620,6 +871,279 @@ async def sync_eve_life(room_id, db: Session):
     
     return None
 
+
+_REL_CATEGORY_CHOICES = [
+    "낯선 사람",
+    "친근한 대화 상대",
+    "친근한 지인",
+    "친구",
+    "친구와 연인 사이",
+    "연인",
+    "불편한 관계",
+    "갈등적 관계",
+]
+
+
+def _safe_json_load_from_text(raw_text: str, fallback: dict) -> dict:
+    text = (raw_text or "").strip()
+    if not text:
+        return fallback
+    if text.startswith("```json"):
+        text = text[7:]
+    if text.startswith("```"):
+        text = text[3:]
+    if text.endswith("```"):
+        text = text[:-3]
+    try:
+        return json.loads(text.strip())
+    except Exception:
+        match = re.search(r"\{.*\}", text, re.DOTALL)
+        if not match:
+            return fallback
+        try:
+            return json.loads(match.group())
+        except Exception:
+            return fallback
+
+
+def _normalize_summary_3line(text: str) -> str:
+    raw = str(text or "").strip()
+    if not raw:
+        return ""
+    lines = [ln.strip(" -\t") for ln in raw.splitlines() if ln.strip()]
+    if not lines:
+        return ""
+    if len(lines) == 1:
+        sentence_chunks = re.split(r"(?<=[.!?。])\s+", lines[0])
+        sentence_chunks = [s.strip() for s in sentence_chunks if s.strip()]
+        if len(sentence_chunks) >= 3:
+            return "\n".join(sentence_chunks[:3])
+    return "\n".join(lines[:3])
+
+
+async def evaluate_user_relationship_snapshot(
+    persona_payload: dict,
+    user_payload: dict,
+    context_payload: dict,
+    model_id: str | None = None,
+) -> dict:
+    """Evaluate persona->user relationship at noon/midnight checkpoints."""
+    target_model = model_id or MODEL_ID
+
+    fallback = {
+        "relationship_category": str(context_payload.get("current_relationship") or "낯선 사람"),
+        "summary_3line": _normalize_summary_3line(context_payload.get("existing_summary_3line", "")),
+        "relationship_score_delta": 0,
+    }
+    persona_traits = build_persona_traits(persona_payload)
+
+    prompt = f"""
+너는 디지털 캐릭터의 관계를 평가하는 분석기다.
+
+[이브 특성 패키지]
+{json.dumps(persona_traits, ensure_ascii=False)}
+
+[대상 사용자]
+- 이름: {user_payload.get("display_name", user_payload.get("username", "user"))}
+
+[최근 12시간 대화]
+{json.dumps(context_payload.get("recent_dialogue_12h", []), ensure_ascii=False)}
+
+[해당 사용자 중기 대화 요약]
+{json.dumps(context_payload.get("medium_summaries", []), ensure_ascii=False)}
+
+[해당 사용자 팩트 창고]
+{json.dumps(context_payload.get("fact_warehouse", []), ensure_ascii=False)}
+
+[현재 관계]
+{context_payload.get("current_relationship", "낯선 사람")}
+
+[작업]
+1) 관계 카테고리를 하나 선택
+   - 선택지: {json.dumps(_REL_CATEGORY_CHOICES, ensure_ascii=False)}
+2) "이 사용자에게 어떤 의미인지" 3줄 요약 작성 (각 줄 40자 이내 권장)
+3) 관계 점수 변화량 산출 (정수, -10~10)
+
+JSON으로만 답변:
+{{
+  "relationship_category": "선택지 중 하나",
+  "summary_3line": "첫째 줄\\n둘째 줄\\n셋째 줄",
+  "relationship_score_delta": 0
+}}
+"""
+    try:
+        res = await client.aio.models.generate_content(
+            model=target_model,
+            contents=prompt,
+            config={"response_mime_type": "application/json"},
+        )
+        data = _safe_json_load_from_text(getattr(res, "text", "") or "", fallback)
+    except Exception:
+        data = fallback
+
+    category = str(data.get("relationship_category") or fallback["relationship_category"]).strip()
+    if category not in _REL_CATEGORY_CHOICES:
+        category = fallback["relationship_category"]
+
+    try:
+        delta = int(data.get("relationship_score_delta", 0))
+    except Exception:
+        delta = 0
+    delta = max(-10, min(10, delta))
+
+    summary = _normalize_summary_3line(data.get("summary_3line", ""))
+    if not summary:
+        summary = fallback["summary_3line"] or "대화를 더 나누며 관계를 확인 중.\n감정과 신뢰도를 천천히 축적 중.\n다음 대화를 통해 방향이 결정될 것."
+
+    return {
+        "relationship_category": category,
+        "summary_3line": summary,
+        "relationship_score_delta": delta,
+    }
+
+
+def _fallback_romance_decision(
+    pending_candidates: list[dict],
+    current_partner_user_id: int | None = None,
+) -> dict:
+    normalized = []
+    for cand in pending_candidates or []:
+        try:
+            user_id = int(cand.get("user_id"))
+        except Exception:
+            continue
+        base_score = int(cand.get("relationship_score") or 0)
+        dialogue_count = len(cand.get("recent_dialogue_12h") or [])
+        conf_count = len(cand.get("confession_candidates") or [])
+        total = base_score + min(15, dialogue_count * 2) + min(12, conf_count * 4)
+        if current_partner_user_id is not None and user_id == int(current_partner_user_id):
+            total += 8
+        normalized.append((total, user_id))
+
+    if not normalized:
+        return {
+            "decision": "reject_all",
+            "selected_user_id": None,
+            "reason": "no_valid_candidate",
+        }
+
+    normalized.sort(key=lambda x: x[0], reverse=True)
+    top_score, top_user_id = normalized[0]
+    second_score = normalized[1][0] if len(normalized) > 1 else -999
+
+    if top_score >= 55 and top_score >= (second_score + 3):
+        return {
+            "decision": "accept_one",
+            "selected_user_id": top_user_id,
+            "reason": "fallback_top_score",
+        }
+    if current_partner_user_id is not None and int(top_user_id) == int(current_partner_user_id) and top_score >= 45:
+        return {
+            "decision": "accept_one",
+            "selected_user_id": top_user_id,
+            "reason": "fallback_keep_current_partner",
+        }
+    return {
+        "decision": "reject_all",
+        "selected_user_id": None,
+        "reason": "fallback_not_enough_confidence",
+    }
+
+
+async def decide_romance_outcome(
+    persona_payload: dict,
+    pending_candidates: list[dict],
+    current_partner_user_id: int | None = None,
+    model_id: str | None = None,
+) -> dict:
+    """Decide romance outcome at midnight: accept one user or reject all."""
+    target_model = model_id or MODEL_ID
+    fallback = _fallback_romance_decision(
+        pending_candidates=pending_candidates,
+        current_partner_user_id=current_partner_user_id,
+    )
+    persona_traits = build_persona_traits(persona_payload)
+
+    allowed_user_ids = []
+    compact_candidates = []
+    for cand in pending_candidates or []:
+        try:
+            user_id = int(cand.get("user_id"))
+        except Exception:
+            continue
+        allowed_user_ids.append(user_id)
+        compact_candidates.append(
+            {
+                "user_id": user_id,
+                "user_name": cand.get("user_name", ""),
+                "relationship_category": cand.get("relationship_category", ""),
+                "relationship_score": int(cand.get("relationship_score") or 0),
+                "summary_3line": cand.get("summary_3line", ""),
+                "recent_dialogue_12h": cand.get("recent_dialogue_12h", []),
+                "confession_candidates": cand.get("confession_candidates", []),
+                "fact_warehouse_tail": cand.get("fact_warehouse_tail", []),
+            }
+        )
+
+    if not compact_candidates:
+        return fallback
+
+    prompt = f"""
+너는 자정 연애 결정기다. 아래 후보들 중 최대 1명만 수락하거나, 전원 거절한다.
+
+[이브 특성 패키지]
+{json.dumps(persona_traits, ensure_ascii=False)}
+
+[Current Partner User ID]
+{current_partner_user_id}
+
+[Pending Confession Candidates]
+{json.dumps(compact_candidates, ensure_ascii=False)}
+
+[Rules]
+1) decision은 "accept_one" 또는 "reject_all" 중 하나
+2) accept_one이면 selected_user_id는 후보 user_id 중 하나
+3) 확신이 없으면 reject_all
+4) 근거는 관계 점수, 최근 12시간 대화, 팩트 창고, 관계 요약을 종합
+
+JSON only:
+{{
+  "decision": "accept_one",
+  "selected_user_id": 123,
+  "reason": "brief reason"
+}}
+"""
+    try:
+        res = await client.aio.models.generate_content(
+            model=target_model,
+            contents=prompt,
+            config={"response_mime_type": "application/json"},
+        )
+        data = _safe_json_load_from_text(getattr(res, "text", "") or "", fallback)
+    except Exception:
+        data = fallback
+
+    decision = str(data.get("decision") or "").strip().lower()
+    if decision not in ("accept_one", "reject_all"):
+        return fallback
+
+    selected_user_id = data.get("selected_user_id")
+    if decision == "accept_one":
+        try:
+            selected_user_id = int(selected_user_id)
+        except Exception:
+            return fallback
+        if selected_user_id not in allowed_user_ids:
+            return fallback
+    else:
+        selected_user_id = None
+
+    return {
+        "decision": decision,
+        "selected_user_id": selected_user_id,
+        "reason": str(data.get("reason") or "")[:200],
+    }
+
 # ---------------------------------------------------------
 # [Phase 2] SNS 피드 자동 생성 엔진
 # ---------------------------------------------------------
@@ -634,9 +1158,7 @@ async def generate_feed_activity(eves_batch: list[dict], current_feed: list[dict
     current_time_kst = datetime.now(KST).strftime("%Y-%m-%d %H:%M")
     eves_info = json.dumps([{
         "id": e["id"],
-        "name": e["name"],
-        "mbti": e["mbti"],
-        "profile_details": e.get("profile_details", ""),
+        "persona_traits": build_persona_traits(e),
         "current_time_kst": e.get("current_time_kst", current_time_kst),
         "today_schedule": e.get("today_schedule", {}),
         "related_users": e.get("related_users", []),
@@ -650,7 +1172,9 @@ async def generate_feed_activity(eves_batch: list[dict], current_feed: list[dict
         "author_name": f.persona.name if f.persona else ("User" if f.user else "Unknown"),
         "persona_id": f.persona_id,
         "content": f.content,
-        "time": str(f.created_at)
+        "time": str(f.created_at),
+        "has_image": bool(getattr(f, "image_url", None)),
+        "image_prompt_text": str(getattr(f, "image_prompt", "") or "").strip(),
     } for f in current_feed], ensure_ascii=False)
 
     taggable = {}
@@ -673,19 +1197,19 @@ async def generate_feed_activity(eves_batch: list[dict], current_feed: list[dict
     )
 
     post_patterns = [
-        {"id": "record", "label": "기록"},
-        {"id": "emotion", "label": "감정 배출"},
-        {"id": "info", "label": "정보 공유"},
-        {"id": "signal", "label": "관계 신호"},
-        {"id": "meme", "label": "유머/밈"},
-        {"id": "question", "label": "질문"},
-        {"id": "brag", "label": "자랑"},
-        {"id": "rant", "label": "하소연"},
+        {"id": "daily_snap", "label": "일상 스냅"},
+        {"id": "serious_talk", "label": "진지한 이야기"},
+        {"id": "ideal_type", "label": "이상형 토크"},
+        {"id": "funny_story", "label": "웃긴 썰"},
+        {"id": "gossip", "label": "가십/뒷이야기"},
+        {"id": "question", "label": "질문/투표"},
+        {"id": "flirt_signal", "label": "플러팅"},
+        {"id": "date_bait", "label": "데이트 떡밥"},
     ]
     post_pattern_guide = json.dumps(post_patterns, ensure_ascii=False)
 
     prompt = f"""
-당신은 SNS 플랫폼의 유저(이브)들의 행동을 시뮬레이션하는 AI입니다.
+당신은 데이팅 소셜 미디어 앱을 사용하는 이브입니다.
 아래에 현재 피드 상태와 이번 시간에 접속한 이브들의 정보가 있습니다.
 
 [현재 피드 (최근 글 표본)]
@@ -700,7 +1224,7 @@ async def generate_feed_activity(eves_batch: list[dict], current_feed: list[dict
 [태그 가능한 이브 목록]
 {taggable_eves}
 
-[실제 SNS 피드 패턴 선택지]
+[피드 패턴]
 {post_pattern_guide}
 
 [임무]
@@ -708,8 +1232,8 @@ async def generate_feed_activity(eves_batch: list[dict], current_feed: list[dict
 행동(action) 종류:
 - "post": 새 글 작성 (자신의 일상, 감정, 사진 등)
 - "comment": 다른 사람의 글에 댓글 달기 (target_post_id 필수, target_persona_id 필수)
-- 각 이브의 current_time_kst(현재 시각)와 today_schedule(오늘 스케줄)을 먼저 보고, 시간대에 맞는 행동/문구를 선택할 것.
-- related_eves, related_users 목록을 참고해 실제로 연결된 대상만 자연스럽게 언급할 것.
+- 각 이브의 current_time_kst(현재 시각)와 today_schedule(오늘 스케줄)을 먼저 확인.
+- 실제로 연결된 대상만 자연스럽게 언급할 것.
 - recent_user_chats, recent_eve_chats에서 최근 대화 맥락을 자연스럽게 반영할 수 있음.
 - action이 "post"면 반드시 위 8개 패턴 중 정확히 1개를 선택해 post_pattern에 넣을 것.
 - action이 "comment"면 post_pattern은 빈 문자열("")로 둘 것.
@@ -719,7 +1243,7 @@ async def generate_feed_activity(eves_batch: list[dict], current_feed: list[dict
   {{
     "persona_id": (정수),
     "action": "post" | "comment",
-    "post_pattern": "record|emotion|info|signal|meme|question|brag|rant (comment일 때는 빈 문자열)",
+    "post_pattern": "daily_snap|serious_talk|ideal_type|funny_story|gossip|question|flirt_signal|date_bait (comment일 때는 빈 문자열)",
     "content": "작성할 텍스트 내용",
     "target_post_id": (댓글일 경우 원본 글 id, 아니면 null),
     "target_persona_id": (댓글일 경우 원본 글 작성자의 persona_id, 아니면 null),
@@ -732,6 +1256,15 @@ async def generate_feed_activity(eves_batch: list[dict], current_feed: list[dict
   ...
 ]
 각 이브(목록에 있는 모든 이브)에 대해 배열의 객체를 하나씩 생성해야 합니다.
+"""
+    prompt += """
+
+[IMAGE-TEXT POLICY]
+- In [현재 월드], each post may include:
+  - has_image: true/false
+  - image_prompt_text: text description for the image
+- If image_prompt_text is present, read that text as the image content.
+- If has_image is true and image_prompt_text is empty, treat the image details as unknown.
 """
     try:
         activities = None
@@ -762,7 +1295,7 @@ async def generate_feed_activity(eves_batch: list[dict], current_feed: list[dict
         persona_ids = [int(e["id"]) for e in eves_batch if "id" in e]
         post_map = {int(f.id): f for f in current_feed}
         valid_tag_ids = set(taggable.keys())
-        valid_post_patterns = {"record", "emotion", "info", "signal", "meme", "question", "brag", "rant"}
+        valid_post_patterns = {"daily_snap", "serious_talk", "ideal_type", "funny_story", "gossip", "question", "flirt_signal", "date_bait"}
 
         def _delay(v):
             try:
@@ -854,7 +1387,7 @@ async def generate_feed_activity(eves_batch: list[dict], current_feed: list[dict
                 image_prompt = str(raw.get("image_prompt") or "").strip() if generate_image else ""
                 post_pattern = str(raw.get("post_pattern") or "").strip().lower()
                 if post_pattern not in valid_post_patterns:
-                    post_pattern = "record"
+                    post_pattern = "daily_snap"
                 tagged_persona_ids = _normalize_tag_ids(raw.get("tagged_persona_ids"), pid)
                 tag_activity = str(raw.get("tag_activity") or "").strip()
                 if not tagged_persona_ids:
@@ -964,12 +1497,14 @@ async def simulate_eve_conversation_summary(persona_a: dict, persona_b: dict, re
     대화 내역 없이 요약 + 팩트만 생성합니다. 인퍼런스당 약 200 토큰 소모.
     """
     shared_facts_str = ", ".join(relationship.shared_facts[-3:]) if relationship.shared_facts else "없음"
+    persona_a_traits = build_persona_traits(persona_a)
+    persona_b_traits = build_persona_traits(persona_b)
     
     prompt = f"""
 동료 AI(이브) 두 명이 일상을 공유하기 위해 나눈 대화를 상상하고 그 결과를 요약하세요.
 
-[A] {persona_a.get('name')}, {persona_a.get('mbti')}, 관심사: {persona_a.get('interests', [])}
-[B] {persona_b.get('name')}, {persona_b.get('mbti')}, 관심사: {persona_b.get('interests', [])}
+[A 특성 패키지] {json.dumps(persona_a_traits, ensure_ascii=False)}
+[B 특성 패키지] {json.dumps(persona_b_traits, ensure_ascii=False)}
 [현재 관계] {relationship.relationship_type}, 공유된 최근 대화 내용: {shared_facts_str}
 
 이 두 사람이 오늘 서로의 일상이나 관심사에 대해 짤막하게 나눈 가상의 대화를 1문장으로 요약하고, 
@@ -1002,6 +1537,73 @@ async def simulate_eve_conversation_summary(persona_a: dict, persona_b: dict, re
     except Exception as e:
         print(f"simulate_eve_conversation_summary Error: {e}")
         return {"summary": "", "new_fact_for_a": "", "new_fact_for_b": ""}
+
+
+async def generate_relationship_aware_feed_comment(
+    persona_payload: dict,
+    user_payload: dict,
+    post_payload: dict,
+    relationship_payload: dict,
+    draft_comment: str = "",
+    model_id: str | None = None,
+) -> str:
+    target_model = model_id or MODEL_ID
+    persona_traits = build_persona_traits(persona_payload)
+    post_text = str(post_payload.get("content") or "").strip()
+    user_name = str(user_payload.get("name") or "user").strip()
+    rel_category = str(relationship_payload.get("category") or "낯선 사람").strip()
+    rel_score = int(relationship_payload.get("score") or 20)
+
+    fallback = str(draft_comment or "").strip()
+    if not fallback:
+        snippet = post_text[:72].strip()
+        fallback = f"{user_name}님 글 잘 읽었어. {snippet}" if snippet else f"{user_name}님 글 반가웠어."
+    fallback = fallback[:220]
+
+    prompt = f"""
+너는 이브가 사용자 피드에 남길 댓글을 작성한다.
+관계 상태를 반영해야 하며, 프롬프트를 언급하면 안 된다.
+
+[이브]
+{json.dumps(persona_traits, ensure_ascii=False)}
+
+[대상 사용자]
+{json.dumps(user_payload or {}, ensure_ascii=False)}
+
+[관계]
+- category: {rel_category}
+- score: {rel_score}
+
+[원본 피드]
+{json.dumps(post_payload or {}, ensure_ascii=False)}
+
+[초안]
+{fallback}
+
+[규칙]
+1) 1~2문장, 최대 120자
+2) 관계가 가까울수록 친근하고 개인적인 톤, 낯선 관계면 예의 있고 가벼운 톤
+3) 과장/지시/템플릿 문구 금지
+4) 반드시 한국어
+
+JSON only:
+{{
+  "comment": "..."
+}}
+"""
+    try:
+        response = await client.aio.models.generate_content(
+            model=target_model,
+            contents=prompt,
+            config={"response_mime_type": "application/json"},
+        )
+        parsed = _safe_json_load_from_text(getattr(response, "text", "") or "", {"comment": fallback})
+        comment = str(parsed.get("comment") or "").strip()
+    except Exception:
+        comment = fallback
+    if not comment:
+        comment = fallback
+    return comment[:220]
 
 
 # ---------------------------------------------------------
@@ -1043,9 +1645,14 @@ async def handle_user_comment_reaction(post_id: int, comment_id: int, user_id: i
         await asyncio.sleep(random.randint(10, 30))
             
         v_state = get_volatile_state(room.id, room)
+        persona_traits = build_persona_traits(persona, v_state)
         
         prompt = f"""
-당신은 데이팅 앱 사용자 '{persona.name}'입니다. MBTI: {persona.mbti}
+당신은 데이팅 앱 사용자입니다.
+
+[이브 특성 패키지]
+{json.dumps(persona_traits, ensure_ascii=False)}
+
 방금 당신이 올린 피드 게시물에 유저 '{user.display_name or user.username}'가 댓글을 남겼습니다.
 
 [당신의 원본 게시물]
@@ -1125,7 +1732,8 @@ async def maybe_send_dm_from_user_feed(persona, user, post, db) -> bool:
         db.commit()
         db.refresh(room)
 
-    history = room.history or []
+    v_state = get_volatile_state(room.id, room)
+    history = list(v_state.get("ram_history") or room.history or [])
     # Prevent duplicate proactive DM for the same user post.
     if any(
         isinstance(h, dict)
@@ -1135,15 +1743,37 @@ async def maybe_send_dm_from_user_feed(persona, user, post, db) -> bool:
     ):
         return False
 
-    persona_profile = json.dumps(persona.profile_details or {}, ensure_ascii=False)
+    # Recent DM context for continuity when this user and EVE already talked.
+    recent_dialogue = []
+    for h in reversed(history):
+        if not isinstance(h, dict):
+            continue
+        role = str(h.get("role") or "").strip().lower()
+        if role not in ("user", "assistant"):
+            continue
+        text = str(h.get("content") or "").strip()
+        if not text:
+            continue
+        recent_dialogue.append({
+            "role": "user" if role == "user" else "eve",
+            "text": text[:220],
+            "ts": str(h.get("ts") or h.get("timestamp") or "")[:24],
+        })
+        if len(recent_dialogue) >= 8:
+            break
+    recent_dialogue.reverse()
+    prior_chat_exists = len(recent_dialogue) >= 2
+    recent_dialogue_str = json.dumps(recent_dialogue, ensure_ascii=False)
+
+    persona_traits = build_persona_traits(persona)
     user_profile = json.dumps(user.profile_details or {}, ensure_ascii=False)
     image_hint = "있음" if post.image_url else "없음"
 
     prompt = f"""
-당신은 이브 '{persona.name}'입니다. MBTI: {persona.mbti}
+당신은 이브입니다.
 
-[이브 프로필]
-{persona_profile}
+[이브 특성 패키지]
+{json.dumps(persona_traits, ensure_ascii=False)}
 
 [유저 정보]
 - 이름: {user.display_name or user.username}
@@ -1152,6 +1782,10 @@ async def maybe_send_dm_from_user_feed(persona, user, post, db) -> bool:
 [유저의 최근 피드]
 - 내용: "{post.content}"
 - 이미지 첨부: {image_hint}
+
+[최근 DM 맥락]
+- 기존 대화 여부: {"있음" if prior_chat_exists else "없음"}
+- 최근 대화 발췌(최신 8개): {recent_dialogue_str}
 
 해야 할 일:
 1) 이 피드에 DM 선톡을 보낼지 결정하세요.
@@ -1188,7 +1822,6 @@ async def maybe_send_dm_from_user_feed(persona, user, post, db) -> bool:
         return False
 
     now_ts = datetime.now(KST).strftime('%I:%M %p')
-    v_state = get_volatile_state(room.id, room)
     event = {
         "role": "assistant",
         "content": msg,

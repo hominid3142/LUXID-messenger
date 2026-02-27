@@ -13,6 +13,9 @@ let isProcessingQueue = false;
 let currentView = "list";
 let notiTargetRoomId = null;
 const DEV_PASS = "31313142";
+let latestSeenFeedPostId = 0;
+let latestKnownFeedPostId = 0;
+const unseenFeedIds = new Set();
 
 // [v1.4.2 신규] 관리자 제어 대상 상태 관리
 let adminSelectedRoomId = null;
@@ -28,6 +31,111 @@ let feedLoading = false;
 let feedScrollBound = false;
 let feedPullBound = false;
 const FEED_PAGE_SIZE = 15;
+const INTRO_TUTORIAL_STORAGE_KEY = "luxid_intro_tutorial_seen_v1";
+const INTRO_TUTORIAL_STEPS = [
+    {
+        title: "\u004c\u0055\u0058\u0049\u0044\uc5d0 \uc624\uc2e0 \uac83\uc744 \ud658\uc601\ud569\ub2c8\ub2e4!",
+        body: ""
+    },
+    {
+        title: "LUXID",
+        body: "\u004c\u0055\u0058\u0049\u0044\ub294 \ub370\uc774\ud130\ub85c \uc874\uc7ac\ud558\ub294 \uac00\uc0c1 \uacf5\uac04\uc774\uc5d0\uc694."
+    },
+    {
+        title: "Evv",
+        body: "\u004c\u0055\u0058\u0049\u0044\uc5d0\ub294 \uc6b0\ub9ac\uc640 \ube44\uc2b7\ud55c, \uc880\ub354 \uce5c\uadfc\ud55c \u0045\u0076\u0076\ub77c\uace0 \ubd88\ub9ac\ub294 \ub514\uc9c0\ud138 \uc0dd\uba85\uccb4\ub4e4\uc774 \uc0b4\uace0 \uc788\uc5b4\uc694. \uc6b0\ub9ac\uc640 \ub611\uac19\uc774 \ub290\ub07c\uace0, \ud589\ub3d9\ud558\uace0, \uc790\uae30\ub9cc\uc758 \uc0b6\uc744 \uc0b4\uc544\uac00\uc8e0."
+    },
+    {
+        title: "\u004c\u0055\u0058\u0049\u0044 \u004d\u0065\u0073\u0073\u0065\u006e\u0067\u0065\u0072",
+        body: "\u004c\u0055\u0058\u0049\u0044\ub97c \uc5ec\ud589\ud558\ub294 \uc5ec\ud589\uc790\ub97c \uc704\ud55c \ud544\uc218 \uc571\uc785\ub2c8\ub2e4. \uc774 \uc571\uc744 \ud1b5\ud574\uc11c\ub9cc \uc9c0\uad6c(\u0045\u0061\u0072\u0074\u0068)\uc640 \ub8e8\uc2dc\ub4dc(\u004c\u0055\u0058\u0049\u0044) \uc0ac\uc774\uc758 \ud1b5\uc2e0\uc774 \uac00\ub2a5\ud574\uc694. \u0045\u0076\u0076 \ub610\ud55c \ub3d9\uc77c\ud55c \uc571\uc744 \uc0ac\uc6a9\ud574 \uc5ec\ub7ec\ubd84\uacfc \uc18c\ud1b5\ud55c\ub2f5\ub2c8\ub2e4!"
+    },
+    {
+        title: "\uc900\ube44\ub418\uc168\ub098\uc694?",
+        body: "\u004c\u0055\u0058\u0049\u0044\uc5d0\uc11c \u0045\u0076\u0076\ub97c \ub9cc\ub098\ubcf4\uc138\uc694!"
+    }
+];
+let introTutorialStepIndex = 0;
+
+function hasSeenIntroTutorial() {
+    return localStorage.getItem(INTRO_TUTORIAL_STORAGE_KEY) === "1";
+}
+
+function markIntroTutorialSeen() {
+    localStorage.setItem(INTRO_TUTORIAL_STORAGE_KEY, "1");
+}
+
+function renderIntroTutorialStep() {
+    const title = document.getElementById("intro-tutorial-title");
+    const body = document.getElementById("intro-tutorial-body");
+    const progress = document.getElementById("intro-tutorial-progress");
+    const nextBtn = document.getElementById("intro-tutorial-next-btn");
+    const skipBtn = document.querySelector(".intro-tutorial-skip");
+    const current = INTRO_TUTORIAL_STEPS[introTutorialStepIndex];
+    if (!current) return;
+
+    if (title) title.innerText = current.title;
+    if (body) body.innerText = current.body || "";
+
+    if (progress) {
+        progress.innerHTML = INTRO_TUTORIAL_STEPS.map((_, i) =>
+            `<div class="tutorial-dot ${i === introTutorialStepIndex ? 'active' : ''}"></div>`
+        ).join("");
+    }
+
+    if (skipBtn) skipBtn.innerText = "\uac74\ub108\ub6f0\uae30"; // 건너뛰기
+    if (nextBtn) {
+        const isLast = introTutorialStepIndex >= INTRO_TUTORIAL_STEPS.length - 1;
+        nextBtn.innerText = isLast ? "\uc2dc\uc791\ud558\uae30" : "\ub2e4\uc74c"; // 시작하기 : 다음
+    }
+}
+
+function showIntroTutorial() {
+    introTutorialStepIndex = 0;
+    const authOverlay = document.getElementById("auth-overlay");
+    const tutorial = document.getElementById("intro-tutorial-screen");
+    if (authOverlay) {
+        authOverlay.style.display = "flex";
+        authOverlay.style.opacity = "1";
+    }
+    if (tutorial) tutorial.style.display = "block";
+    renderIntroTutorialStep();
+}
+
+function skipIntroTutorial() {
+    markIntroTutorialSeen();
+    const authOverlay = document.getElementById("auth-overlay");
+    if (authOverlay) {
+        authOverlay.style.opacity = "0";
+        authOverlay.style.transition = "opacity 0.5s ease-out";
+        setTimeout(() => {
+            authOverlay.style.display = "none";
+            authOverlay.style.opacity = "1"; // reset for next time if needed
+            authOverlay.style.transition = "";
+        }, 500);
+    }
+    switchMobileView("feed");
+    loadFeed(true);
+}
+
+function nextIntroTutorial() {
+    if (introTutorialStepIndex >= INTRO_TUTORIAL_STEPS.length - 1) {
+        skipIntroTutorial();
+        return;
+    }
+
+    const card = document.querySelector(".intro-tutorial-card");
+    if (card) {
+        card.classList.add("step-transition");
+        setTimeout(() => {
+            introTutorialStepIndex += 1;
+            renderIntroTutorialStep();
+            card.classList.remove("step-transition");
+        }, 300);
+    } else {
+        introTutorialStepIndex += 1;
+        renderIntroTutorialStep();
+    }
+}
 
 // 앱 시작 시 인증 체크
 async function checkAuth() {
@@ -39,6 +147,11 @@ async function checkAuth() {
         loadFriends();
     } else {
         updateUIByAuth();
+        if (hasSeenIntroTutorial()) {
+            if (authOverlay) authOverlay.style.display = "none";
+        } else {
+            showIntroTutorial();
+        }
     }
 
     // 무조건 피드 화면으로 시작
@@ -61,13 +174,8 @@ function closeAuthModal() {
 
 function openAuthOverlay(mode = "login") {
     closeAuthModal();
-    const authOverlay = document.getElementById("auth-overlay");
-    if (authOverlay) authOverlay.style.display = "flex";
-    const welcome = document.getElementById("welcome-screen");
-    const form = document.getElementById("auth-form-container");
-    if (welcome) welcome.style.display = "none";
-    if (form) form.style.display = "block";
     toggleAuthMode(mode);
+    showAuthModal();
 }
 
 // 동작 가로채기 (인터랙션 방어)
@@ -93,8 +201,8 @@ function toggleAuthMode(mode) {
 
 // 로그인 처리
 async function handleLogin() {
-    const u = (document.getElementById("sheet-login-username")?.value || document.getElementById("login-username")?.value || "").trim();
-    const p = (document.getElementById("sheet-login-password")?.value || document.getElementById("login-password")?.value || "").trim();
+    const u = (document.getElementById("sheet-login-username")?.value || "").trim();
+    const p = (document.getElementById("sheet-login-password")?.value || "").trim();
 
     try {
         const res = await fetch("/login", {
@@ -136,8 +244,8 @@ async function handleLogin() {
 
 // 회원가입 처리 - [v1.5.0] 회원가입 후 자동 로그인 및 프로필 작성
 async function handleRegister() {
-    const u = (document.getElementById("sheet-reg-username")?.value || document.getElementById("reg-username")?.value || "").trim();
-    const p = (document.getElementById("sheet-reg-password")?.value || document.getElementById("reg-password")?.value || "").trim();
+    const u = (document.getElementById("sheet-reg-username")?.value || "").trim();
+    const p = (document.getElementById("sheet-reg-password")?.value || "").trim();
 
     const res = await fetch("/register", {
         method: "POST",
@@ -187,6 +295,11 @@ function logout() {
     localStorage.removeItem("accessToken");
     localStorage.removeItem("isAdmin");
     localStorage.removeItem("username");
+    unreadCounts = {};
+    latestSeenFeedPostId = 0;
+    latestKnownFeedPostId = 0;
+    unseenFeedIds.clear();
+    updateBottomNavBadges();
     updateUIByAuth();
     switchMobileView("feed");
 }
@@ -238,6 +351,92 @@ function closeAuth() {
     document.getElementById("pass-input").value = "";
 }
 
+function _sumUnreadMessages() {
+    return Object.values(unreadCounts || {}).reduce((acc, value) => {
+        const n = Number(value) || 0;
+        return acc + (n > 0 ? n : 0);
+    }, 0);
+}
+
+function _setBadge(elId, count) {
+    const el = document.getElementById(elId);
+    if (!el) return;
+    const n = Math.max(0, Number(count) || 0);
+    if (n <= 0) {
+        el.style.display = "none";
+        return;
+    }
+    el.style.display = "inline-block";
+    el.innerText = n > 99 ? "99+" : String(n);
+}
+
+function updateBottomNavBadges() {
+    _setBadge("chats-tab-badge", _sumUnreadMessages());
+    _setBadge("feed-tab-badge", unseenFeedIds.size);
+}
+
+function _getMaxFeedPostId(posts) {
+    if (!Array.isArray(posts) || posts.length === 0) return 0;
+    let maxId = 0;
+    posts.forEach((post) => {
+        const id = Number(post?.id || 0);
+        if (Number.isFinite(id) && id > maxId) maxId = id;
+    });
+    return maxId;
+}
+
+function _ingestFeedPostsForBadge(posts, asSeen = false) {
+    const maxId = _getMaxFeedPostId(posts);
+    if (maxId > latestKnownFeedPostId) latestKnownFeedPostId = maxId;
+    if (maxId <= 0) {
+        updateBottomNavBadges();
+        return;
+    }
+
+    if (asSeen || currentView === "feed") {
+        latestSeenFeedPostId = Math.max(latestSeenFeedPostId, maxId);
+        unseenFeedIds.clear();
+        updateBottomNavBadges();
+        return;
+    }
+
+    if (latestSeenFeedPostId <= 0) {
+        latestSeenFeedPostId = maxId;
+        updateBottomNavBadges();
+        return;
+    }
+
+    posts.forEach((post) => {
+        const id = Number(post?.id || 0);
+        if (Number.isFinite(id) && id > latestSeenFeedPostId) {
+            unseenFeedIds.add(id);
+        }
+    });
+    updateBottomNavBadges();
+}
+
+function _markFeedSeen() {
+    if (latestKnownFeedPostId > latestSeenFeedPostId) {
+        latestSeenFeedPostId = latestKnownFeedPostId;
+    }
+    unseenFeedIds.clear();
+    updateBottomNavBadges();
+}
+
+async function pollFeedBadge() {
+    if (!accessToken || currentView === "feed") return;
+    try {
+        const res = await fetch("/api/feed?offset=0&limit=10", {
+            headers: { Authorization: `Bearer ${accessToken}` }
+        });
+        if (!res.ok) return;
+        const data = await res.json();
+        const posts = Array.isArray(data) ? data : (data.items || []);
+        _ingestFeedPostsForBadge(posts, false);
+    } catch (_) {
+    }
+}
+
 function switchMobileView(view) {
     // [Phase 5] 게스트 모드 뷰 접근 제한
     if (!accessToken && ['map', 'list', 'chats', 'settings'].includes(view)) {
@@ -274,6 +473,7 @@ function switchMobileView(view) {
         if (slider) slider.style.transform = "translateX(0%)";
         title.innerText = "LUXID";
         navs[0].classList.add("active");
+        _markFeedSeen();
         loadFeed(true);
     } else if (view === "map") { // [NEW] 맵 탭
         if (slider) slider.style.transform = "translateX(-20%)";
@@ -914,8 +1114,14 @@ async function loadFriends() {
         });
         if (res.status === 401) return logout();
         friendsData = await res.json();
+        const validRoomIds = new Set((friendsData || []).map((f) => Number(f.room_id)));
+        Object.keys(unreadCounts || {}).forEach((k) => {
+            const rid = Number(k);
+            if (!validRoomIds.has(rid)) delete unreadCounts[k];
+        });
         renderFriendList();
         renderChatList();
+        updateBottomNavBadges();
     } catch (e) {
         setEngineStatus(false);
     }
@@ -1199,6 +1405,8 @@ function renderFullProfile(data) {
     const statRel = document.getElementById("fp-stat-rel");
     const personalitySection = document.getElementById("fp-personality-section");
     const vibeSection = document.getElementById("fp-vibe-section");
+    const diarySection = document.getElementById("fp-diary-section");
+    const diaryList = document.getElementById("fp-diary-list");
     const details = data.profile_details || {};
 
     const hookText = (details.hook || "").trim() || "No hook yet.";
@@ -1273,9 +1481,35 @@ function renderFullProfile(data) {
         if (!Number.isFinite(n)) return "-";
         return `${Math.max(0, Math.min(100, Math.round(n)))}%`;
     };
+    const esc = (v) => String(v || "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/\"/g, "&quot;")
+        .replace(/'/g, "&#39;");
 
     if (personalitySection) personalitySection.style.display = isAdmin ? "block" : "none";
     if (vibeSection) vibeSection.style.display = isAdmin ? "block" : "none";
+    if (diarySection && diaryList) {
+        const diaries = Array.isArray(data.diaries) ? data.diaries : [];
+        if (isAdmin) {
+            diarySection.style.display = "block";
+            if (diaries.length > 0) {
+                const ordered = [...diaries].reverse();
+                diaryList.innerHTML = ordered.map((d) => `
+                    <div style="background:var(--bg-secondary); border-radius:10px; padding:12px; font-size:13px; line-height:1.6;">
+                        <div style="color:var(--text-sub); font-size:11px; margin-bottom:6px;">${esc(d.date || "")}</div>
+                        <div style="color:var(--text-main); white-space:pre-wrap;">${esc(d.content || "")}</div>
+                    </div>
+                `).join("");
+            } else {
+                diaryList.innerHTML = `<div style="color:var(--text-sub); font-size:13px;">일기가 없습니다.</div>`;
+            }
+        } else {
+            diarySection.style.display = "none";
+            diaryList.innerHTML = "";
+        }
+    }
 
     document.getElementById("fp-trait-serious").innerText = asScore(data.p_seriousness);
     document.getElementById("fp-trait-friendly").innerText = asScore(data.p_friendliness);
@@ -1388,11 +1622,19 @@ function openLightbox(url, promptText = null) {
     const overlay = document.getElementById("lightbox-overlay");
     const img = document.getElementById("lightbox-img");
     const promptEl = document.getElementById("lightbox-prompt");
+    let safePrompt = promptText || "";
+    if (safePrompt) {
+        try {
+            safePrompt = decodeURIComponent(safePrompt);
+        } catch (_) {
+            // Keep raw text if it's not URI-encoded.
+        }
+    }
     if (overlay && img) {
         img.src = url;
 
-        if (isAdmin && promptText) {
-            promptEl.innerText = `[IMAGE PROMPT]\n${promptText}`;
+        if (isAdmin && safePrompt) {
+            promptEl.innerText = `[IMAGE PROMPT]\n${safePrompt}`;
             promptEl.style.display = "block";
         } else {
             promptEl.style.display = "none";
@@ -1628,6 +1870,7 @@ function handleIncomingData(roomId, data) {
                     appendMsg("ai", r.text, r.ts);
                 } else {
                     unreadCounts[roomId] = (unreadCounts[roomId] || 0) + 1;
+                    updateBottomNavBadges();
                     showInAppNoti(f, r.text, roomId);
                     if (currentView === "chats") renderChatList();
                 }
@@ -1697,6 +1940,7 @@ function handleNotiClick() {
 async function joinRoom(roomId) {
     currentRoomId = roomId;
     unreadCounts[roomId] = 0;
+    updateBottomNavBadges();
     closeProfile(); // In case full profile is open
     switchMobileView("chat");
 
@@ -2324,20 +2568,12 @@ function updateUIByAuth() {
             logoutBtn.style.color = "white";
         }
     }
+    updateBottomNavBadges();
 }
 
 // =================================================
 // [v1.5.0] 온보딩 플로우 함수
 // =================================================
-
-// 시작하기 버튼 클릭 시 로그인/회원가입 폼 표시
-function showAuthForms() {
-    const welcomeScreen = document.getElementById("welcome-screen");
-    const authFormContainer = document.getElementById("auth-form-container");
-
-    if (welcomeScreen) welcomeScreen.style.display = "none";
-    if (authFormContainer) authFormContainer.style.display = "block";
-}
 
 // =================================================
 // [v1.5.0] 프로필 작성 함수
@@ -2652,7 +2888,7 @@ async function editMyProfile() {
             setProfileMbtiDial(profile.mbti || "INFP");
 
             if (profile.profile_details) {
-                document.getElementById("profile-hook").value = profile.profile_details.hook || profile.profile_details.intro || "";
+                document.getElementById("profile-hook").value = profile.profile_details.hook || "";
             }
 
             // 아바타 미리보기
@@ -2776,6 +3012,7 @@ async function loadFeed(reset = false) {
             const data = await res.json();
             const posts = Array.isArray(data) ? data : (data.items || []);
             const hasMore = Array.isArray(data) ? (posts.length === FEED_PAGE_SIZE) : !!data.has_more;
+            _ingestFeedPostsForBadge(posts, currentView === "feed");
             renderFeed(posts, !reset);
             feedOffset += posts.length;
             feedHasMore = hasMore;
@@ -2801,7 +3038,9 @@ function openEveProfileFromFeed(personaId, roomId) {
         openProfile(targetRoomId);
         return;
     }
-    fetch(`/api/public/persona/${personaId}`)
+    fetch(`/api/public/persona/${personaId}`, {
+        headers: accessToken ? { Authorization: `Bearer ${accessToken}` } : {}
+    })
         .then((r) => (r.ok ? r.json() : null))
         .then((p) => {
             if (!p) {
@@ -2818,7 +3057,8 @@ function openEveProfileFromFeed(personaId, roomId) {
                 profile_image_url: p.profile_image_url,
                 profile_images: Array.isArray(p.profile_images) ? p.profile_images : [],
                 image_prompt: "",
-                profile_details: p.profile_details || { hook: p.intro || "" },
+                profile_details: p.profile_details || { hook: "" },
+                diaries: Array.isArray(p.diaries) ? p.diaries : [],
                 relationship_category: "Not friends",
                 p_seriousness: null,
                 p_friendliness: null,
@@ -2936,7 +3176,7 @@ function renderFeed(posts, append = false) {
     if (!container) return;
 
     const html = posts.map(post => {
-        const promptParam = (isAdmin && post.image_prompt) ? post.image_prompt.replace(/'/g, "\\'") : "";
+        const promptParam = (isAdmin && post.image_prompt) ? encodeURIComponent(post.image_prompt) : "";
         const canOpenPersonaProfile = post.author_type === "persona" && post.author_id;
         const profileClick = canOpenPersonaProfile ? `onclick="openEveProfileFromFeed(${post.author_id}, ${post.room_id ? post.room_id : 'null'})"` : "";
         const dmClick = canOpenPersonaProfile ? `onclick="handleFeedDMClick(${post.author_id}, ${post.room_id ? post.room_id : 'null'})"` : "";
@@ -2976,6 +3216,9 @@ function renderFeed(posts, append = false) {
             }).join("")}
             </div>`
             : "";
+        const locationLabel = post.location_name
+            ? `${post.location_district ? `${post.location_district} · ` : ""}${post.location_name}`
+            : "";
 
         return `
         <article class="feed-card">
@@ -2992,7 +3235,7 @@ function renderFeed(posts, append = false) {
                 <div class="feed-header-row">
                     <div class="feed-username" ${profileClick}>${post.author_name}</div>
                     <div style="display:flex; align-items:center; gap:8px;">
-                        <div class="feed-time">${post.created_at}</div>
+                        <div class="feed-time">${post.created_at}${locationLabel ? ` · ${locationLabel}` : ""}</div>
                         ${post.can_delete ? `<button onclick="deleteFeedPost(${post.id})" style="border:none; background:transparent; color:#ff3b30; font-size:12px; cursor:pointer;">삭제</button>` : ""}
                     </div>
                 </div>
@@ -3254,27 +3497,58 @@ function openMapEveFullProfile(personaId) {
         return;
     }
 
-    renderFullProfile({
-        room_id: null,
-        persona_id: eve.id,
-        name: eve.name,
-        age: eve.age,
-        gender: eve.gender,
-        mbti: eve.mbti,
-        profile_image_url: eve.image,
-        profile_images: Array.isArray(eve.profile_images) ? eve.profile_images : [],
-        image_prompt: eve.image_prompt,
-        profile_details: eve.profile_details || {},
-        relationship_category: "Not friends",
-        p_seriousness: null,
-        p_friendliness: null,
-        p_rationality: null,
-        p_slang: null,
-        v_likeability: null,
-        v_v_mood: null,
-        v_relationship: null,
-        v_erotic: null
-    });
+    fetch(`/api/public/persona/${eve.id}`, {
+        headers: accessToken ? { Authorization: `Bearer ${accessToken}` } : {}
+    })
+        .then((r) => (r.ok ? r.json() : null))
+        .then((p) => {
+            renderFullProfile({
+                room_id: null,
+                persona_id: eve.id,
+                name: eve.name,
+                age: eve.age,
+                gender: eve.gender,
+                mbti: eve.mbti,
+                profile_image_url: eve.image,
+                profile_images: Array.isArray(eve.profile_images) ? eve.profile_images : [],
+                image_prompt: eve.image_prompt,
+                profile_details: eve.profile_details || {},
+                diaries: Array.isArray(p?.diaries) ? p.diaries : [],
+                relationship_category: "Not friends",
+                p_seriousness: null,
+                p_friendliness: null,
+                p_rationality: null,
+                p_slang: null,
+                v_likeability: null,
+                v_v_mood: null,
+                v_relationship: null,
+                v_erotic: null
+            });
+        })
+        .catch(() => {
+            renderFullProfile({
+                room_id: null,
+                persona_id: eve.id,
+                name: eve.name,
+                age: eve.age,
+                gender: eve.gender,
+                mbti: eve.mbti,
+                profile_image_url: eve.image,
+                profile_images: Array.isArray(eve.profile_images) ? eve.profile_images : [],
+                image_prompt: eve.image_prompt,
+                profile_details: eve.profile_details || {},
+                diaries: [],
+                relationship_category: "Not friends",
+                p_seriousness: null,
+                p_friendliness: null,
+                p_rationality: null,
+                p_slang: null,
+                v_likeability: null,
+                v_v_mood: null,
+                v_relationship: null,
+                v_erotic: null
+            });
+        });
 
     const chatBtn = document.getElementById("fp-chat-btn");
     const delBtn = document.getElementById("fp-delete-btn");
@@ -3321,5 +3595,13 @@ function handleFeedDMClick(authorId, roomId) {
 // 초기 실행 + 피드 2분 자동 갱신
 checkAuth();
 setInterval(() => {
-    if (currentView === "feed") loadFeed(true);
+    if (currentView === "feed") {
+        loadFeed(true);
+    }
 }, 120000);
+// 피드 탭이 아닐 때는 배지만 더 자주 갱신
+setInterval(() => {
+    if (currentView !== "feed") {
+        pollFeedBadge();
+    }
+}, 30000);
