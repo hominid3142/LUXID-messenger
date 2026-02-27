@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from google import genai
 from sqlalchemy.orm import Session
-from memory import KST, get_date_info, get_volatile_state, get_shared_memory_context, get_user_registry_context, build_dynamic_context, tick_info_slots, DIA_CATEGORIES
+from memory import KST, volatile_memory, get_date_info, get_volatile_state, get_shared_memory_context, get_user_registry_context, build_dynamic_context, tick_info_slots, DIA_CATEGORIES
 from models import ChatRoom, Persona, EveRelationship, User
 from auth_utils import update_user_tokens
 
