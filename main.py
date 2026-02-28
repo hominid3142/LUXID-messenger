@@ -3066,7 +3066,7 @@ async def websocket_endpoint(websocket: WebSocket, room_id: int):
                             db_room = db.query(ChatRoom).filter(
                                 ChatRoom.id == room_id).first()
                             if db_room:
-                                db_room.history = v_state['ram_history'][-100:]
+                                db_room.history = v_state['ram_history']
                                 _record_confession_event(
                                     db=db,
                                     room=db_room,
@@ -3323,7 +3323,7 @@ async def websocket_endpoint(websocket: WebSocket, room_id: int):
                             db_room = db.query(ChatRoom).filter(
                                 ChatRoom.id == room_id).first()
                             if db_room:
-                                db_room.history = v_state['ram_history'][-100:]
+                                db_room.history = v_state['ram_history']
                                 db.commit()
                         except Exception as history_save_err:
                             print(f"history save error(room={room_id}): {history_save_err}")
@@ -3344,7 +3344,7 @@ async def websocket_endpoint(websocket: WebSocket, room_id: int):
                                 False,
                                 "current_status":
                                 current_status_info,
-                                "history": v_state['ram_history'][-20:]
+                                "history": v_state['ram_history']
                             })
 
                     v_state['tick_counter'] = (v_state['tick_counter'] +
