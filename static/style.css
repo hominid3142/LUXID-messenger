@@ -810,7 +810,7 @@ body.is-profile #profile-page {
 }
 
 .live-ticker-track-clone {
-  animation-delay: -17s;
+  display: none;
 }
 
 @keyframes liveTickerFlow {

@@ -16,7 +16,6 @@ from memory import (
     volatile_memory,
     update_shared_memory,
     set_ticker_active_eve_count,
-    push_ticker_event,
 )
 try:
     from location_planner import compute_hourly_location_plan, planned_location_id_for_datetime
@@ -1513,14 +1512,6 @@ class AEScheduler:
                 current_summaries = rel.conversation_summaries or []
                 current_summaries.append(summary)
                 rel.conversation_summaries = current_summaries[-20:]
-                summary_text = " ".join(str(summary).split())
-                if len(summary_text) > 72:
-                    summary_text = summary_text[:69].rstrip() + "..."
-                if summary_text:
-                    push_ticker_event(
-                        f"{p_a.name} <-> {p_b.name} chat: {summary_text}",
-                        kind="eve_chat",
-                    )
 
             if fact_a:
                 update_shared_memory(db, rel.persona_a_id, [{"fact": fact_a, "is_public": True, "category": "fact"}], source_user_id=None)
@@ -1571,10 +1562,6 @@ class AEScheduler:
             post_budget, comment_budget, planned_count = await self._plan_hourly_actions(db, now)
             active_for_social = self._pick_candidate_personas(db, now, limit=20)
             set_ticker_active_eve_count(len(active_for_social))
-            push_ticker_event(
-                f"Hourly active eves selected: {len(active_for_social)}",
-                kind="active",
-            )
             if active_for_social:
                 await self._run_social_simulations_for_batch(active_for_social, db)
             dm_sent = await self._run_feed_to_dm_bridge(active_for_social, db)
