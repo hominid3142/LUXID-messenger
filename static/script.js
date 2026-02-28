@@ -489,17 +489,15 @@ async function pollFeedBadge() {
     }
 }
 
-function _renderLiveTickerText(items) {
+function _renderLiveTickerText(data) {
     const trackA = document.getElementById("live-ticker-track-a");
     const trackB = document.getElementById("live-ticker-track-b");
     if (!trackA || !trackB) return;
 
-    const safeItems = (Array.isArray(items) ? items : [])
-        .map((v) => String(v || "").replace(/\s+/g, " ").trim())
-        .filter(Boolean);
-    const text = safeItems.length > 0
-        ? `LIVE CHANNEL  |  ${safeItems.join("  |  ")}  |`
-        : "LIVE CHANNEL  |  Loading telemetry...  |";
+    const activeEves = Number(data?.active_eves) || 0;
+    const activeUsers = Number(data?.active_users) || 0;
+    const conversationCount = Number(data?.conversation_count) || 0;
+    const text = `LIVE CHANNEL  |  접속 이브 ${activeEves}명  |  접속 사용자 ${activeUsers}명  |  진행 중 대화 ${conversationCount}건  |`;
     trackA.textContent = text;
     trackB.textContent = text;
 }
@@ -517,7 +515,7 @@ async function fetchLiveTicker() {
         const res = await fetch("/api/ticker", { headers });
         if (!res.ok) return;
         const data = await res.json();
-        _renderLiveTickerText(data.items || []);
+        _renderLiveTickerText(data || {});
     } catch (_) {
     }
 }
@@ -1183,12 +1181,26 @@ async function openAdminPersonaProfile(personaId) {
 
         if (details.shared_memory && details.shared_memory.length > 0) {
             memHtml += `<div style="font-size:14px; font-weight:bold; margin-top:12px; margin-bottom:6px; color:var(--text-main);">[ 저장된 주요 기억 (Memories) ]</div>`;
-            memHtml += details.shared_memory.slice(-10).reverse().map(m => `
+                        memHtml += details.shared_memory.slice(-10).reverse().map((m) => {
+                const isObj = m && typeof m === "object";
+                const category = isObj ? (m.category || "MEMORY") : "MEMORY";
+                const factText = isObj ? (m.fact || "") : String(m || "");
+                const stamp = isObj ? (m.timestamp || m.ts || "") : "";
+                const isPublic = isObj ? (m.is_public !== false) : true;
+                const visibilityLabel = isPublic ? "\uacf5\uac1c" : "\ube44\uacf5\uac1c";
+                const visibilityStyle = isPublic
+                    ? "background:#dcedc8; color:#33691e; border:1px solid #aed581;"
+                    : "background:#ffebee; color:#b71c1c; border:1px solid #ef9a9a;";
+                return `
                 <div style="padding:8px 12px; background:#f0f4c3; border-radius:8px; font-size:13px; border:1px solid #e6ee9c; margin-bottom:6px; line-height:1.4; color:var(--text-main);">
-                    <span style="font-size:10px; color:#9e9d24; display:block; margin-bottom:2px;">[${m.category || '기억'}] ${m.ts || ''}</span>
-                    ${m.fact}
+                    <span style="font-size:10px; color:#9e9d24; display:flex; align-items:center; gap:6px; margin-bottom:2px;">
+                        <span>[${category}] ${stamp}</span>
+                        <span style="padding:1px 6px; border-radius:999px; font-weight:700; ${visibilityStyle}">${visibilityLabel}</span>
+                    </span>
+                    ${factText}
                 </div>
-            `).join("");
+            `;
+            }).join("");
         }
 
         if (!memHtml) {
