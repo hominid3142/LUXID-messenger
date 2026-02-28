@@ -27,8 +27,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# 모듈화된 파일들에서 기능 임포트
-from database import engine, SessionLocal, Base
+# 紐⑤뱢?붾맂 ?뚯씪?ㅼ뿉??湲곕뒫 ?꾪룷??from database import engine, SessionLocal, Base
 from models import Persona, ChatRoom, User, PromptTemplate, SystemNotice, FeedPost, FeedComment, MapLocation, EveRelationship, UserPersonaRelationship
 from memory import (
     KST,
@@ -38,7 +37,6 @@ from memory import (
     update_shared_memory,
     tick_info_slots,
     DIA_CATEGORIES,
-    push_ticker_event,
     get_ticker_snapshot,
 )
 from engine import run_medium_thinking, run_short_thinking, run_utterance, generate_eve_visuals, generate_eve_nickname, client, MODEL_ID, debug_log_buffer, sync_eve_life, build_persona_traits
@@ -66,9 +64,9 @@ class SettingsUpdate(BaseModel):
 
 app = FastAPI()
 
-# [v1.2.0] 비용 계산을 위한 사전 설정 상수
-COST_PER_1M_TOKENS = 0.15  # Gemini 3.0(Flash) 인풋/아웃풋 통합 평균가 ($0.15 / 1M tokens)
-COST_PER_IMAGE = 0.02  # fal.ai (Grok Imagine 등) 이미지 생성 단가 ($0.02 / image)
+# [v1.2.0] 鍮꾩슜 怨꾩궛???꾪븳 ?ъ쟾 ?ㅼ젙 ?곸닔
+COST_PER_1M_TOKENS = 0.15  # Gemini 3.0(Flash) ?명뭼/?꾩썐???듯빀 ?됯퇏媛 ($0.15 / 1M tokens)
+COST_PER_IMAGE = 0.02  # fal.ai (Grok Imagine ?? ?대?吏 ?앹꽦 ?④? ($0.02 / image)
 USER_FEED_IMAGE_CAPTION_MODEL = os.environ.get("USER_FEED_IMAGE_CAPTION_MODEL", "gemini-2.5-flash-lite")
 USER_FEED_IMAGE_MAX_BYTES = int(os.environ.get("USER_FEED_IMAGE_MAX_BYTES", str(6 * 1024 * 1024)))
 ADMIN_SERVER_LOG_MAX_LINES = int(os.environ.get("ADMIN_SERVER_LOG_MAX_LINES", "2000"))
@@ -164,23 +162,16 @@ def _to_kst(dt: Optional[datetime]) -> Optional[datetime]:
     return dt.astimezone(KST)
 
 
-def _summarize_topic_text(text: str, max_len: int = 36) -> str:
-    raw = " ".join(str(text or "").split())
-    if not raw:
-        return ""
-    if len(raw) <= max_len:
-        return raw
-    return raw[: max_len - 3].rstrip() + "..."
 
-# 보안 설정: JWT 토큰 추출을 위한 스킴
+# 蹂댁븞 ?ㅼ젙: JWT ?좏겙 異붿텧???꾪븳 ?ㅽ궡
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login", auto_error=False)
 
 
-# [v1.6.0] 강력한 캐시 무효화 미들웨어
+# [v1.6.0] 媛뺣젰??罹먯떆 臾댄슚??誘몃뱾?⑥뼱
 @app.middleware("http")
 async def add_no_cache_header(request: Request, call_next):
     response = await call_next(request)
-    # 정적 파일 및 HTML 등 모든 응답에 대해 캐시 방지 헤더 설정
+    # ?뺤쟻 ?뚯씪 諛?HTML ??紐⑤뱺 ?묐떟?????罹먯떆 諛⑹? ?ㅻ뜑 ?ㅼ젙
     response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate, max-age=0"
     response.headers["Pragma"] = "no-cache"
     response.headers["Expires"] = "0"
@@ -212,12 +203,12 @@ async def add_no_cache_header(request: Request, call_next):
     return response
 
 
-# [v1.2.0] 토큰 사용량 업데이트 함수 (auth_utils로 이동됨)
+# [v1.2.0] ?좏겙 ?ъ슜???낅뜲?댄듃 ?⑥닔 (auth_utils濡??대룞??
 # def update_user_tokens(db: Session, user_id: int, tokens_used: int): ...
 
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
-# DB 테이블 생성
+# DB ?뚯씠釉??앹꽦
 Base.metadata.create_all(bind=engine)
 
 
@@ -397,10 +388,10 @@ def _ensure_relationship_schema():
 
         for room in db.query(ChatRoom).all():
             if room.relationship_category is None:
-                room.relationship_category = "낯선 사람"
+                room.relationship_category = "??꽑 ?щ엺"
                 changed = True
             if getattr(room, "romance_state", None) is None:
-                room.romance_state = "싱글"
+                room.romance_state = "?깃?"
                 changed = True
             if getattr(room, "confession_pending", None) is None:
                 room.confession_pending = False
@@ -437,14 +428,14 @@ def _ensure_relationship_schema():
                 rel_pair = UserPersonaRelationship(
                     user_id=room.owner_id,
                     persona_id=room.persona_id,
-                    relationship_category=room.relationship_category or "낯선 사람",
+                    relationship_category=room.relationship_category or "??꽑 ?щ엺",
                     relationship_score=room.v_relationship if room.v_relationship is not None else 20,
                     likeability=room.v_likeability if room.v_likeability is not None else 50,
                     erotic=room.v_erotic if room.v_erotic is not None else 30,
                     mood=room.v_v_mood if room.v_v_mood is not None else 50,
                     relationship_last_defined_at=getattr(room, "relationship_last_defined_at", None),
                     relationship_summary_3line=getattr(room, "relationship_summary_3line", None),
-                    romance_state=getattr(room, "romance_state", "싱글") or "싱글",
+                    romance_state=getattr(room, "romance_state", "?깃?") or "?깃?",
                     romance_partner_label=getattr(room, "romance_partner_label", None),
                     confession_pending=bool(getattr(room, "confession_pending", False)),
                     confession_received_at=getattr(room, "confession_received_at", None),
@@ -455,13 +446,13 @@ def _ensure_relationship_schema():
                 changed = True
             else:
                 if rel_pair.relationship_category is None:
-                    rel_pair.relationship_category = room.relationship_category or "낯선 사람"
+                    rel_pair.relationship_category = room.relationship_category or "??꽑 ?щ엺"
                     changed = True
                 if rel_pair.relationship_score is None:
                     rel_pair.relationship_score = room.v_relationship if room.v_relationship is not None else 20
                     changed = True
                 if rel_pair.romance_state is None:
-                    rel_pair.romance_state = getattr(room, "romance_state", "싱글") or "싱글"
+                    rel_pair.romance_state = getattr(room, "romance_state", "?깃?") or "?깃?"
                     changed = True
                 if rel_pair.confession_pending is None:
                     rel_pair.confession_pending = bool(getattr(room, "confession_pending", False))
@@ -494,7 +485,7 @@ def _ensure_relationship_schema():
 _ensure_relationship_schema()
 
 # ---------------------------------------------------------
-# 0. 인증 및 유저 관리 유틸리티
+# 0. ?몄쬆 諛??좎? 愿由??좏떥由ы떚
 # ---------------------------------------------------------
 
 
@@ -508,7 +499,7 @@ def get_db():
 
 async def get_current_user(token: str = Depends(oauth2_scheme),
                            db: Session = Depends(get_db)):
-    """토큰을 검증하여 현재 로그인한 유저 객체를 반환합니다."""
+    """?좏겙??寃利앺븯???꾩옱 濡쒓렇?명븳 ?좎? 媛앹껜瑜?諛섑솚?⑸땲??"""
     if not token:
         return None
     payload = decode_access_token(token)
@@ -518,6 +509,18 @@ async def get_current_user(token: str = Depends(oauth2_scheme),
     if username is None:
         return None
     user = db.query(User).filter(User.username == username).first()
+    if user:
+        try:
+            now_utc = datetime.utcnow()
+            last_active = user.last_active
+            if (not isinstance(last_active, datetime)) or ((now_utc - last_active).total_seconds() >= 30):
+                user.last_active = now_utc
+                db.commit()
+        except Exception:
+            try:
+                db.rollback()
+            except Exception:
+                pass
     return user
 
 
@@ -562,11 +565,11 @@ def _clear_login_failures(key: str):
 
 
 _CONFESSION_REGEX = re.compile(
-    r"(나랑\s*사귀|사귀자|사귈래|연애하자|고백할게|고백할게요|좋아해|사랑해|남친\s*해줘|여친\s*해줘|커플\s*하자)",
+    r"(?섎옉\s*?ш?|?ш????ш톲???곗븷?섏옄|怨좊갚?좉쾶|怨좊갚?좉쾶??醫뗭븘???щ옉???⑥튇\s*?댁쨾|?ъ튇\s*?댁쨾|而ㅽ뵆\s*?섏옄)",
     re.IGNORECASE,
 )
 _CONFESSION_NEGATIVE_REGEX = re.compile(
-    r"(사귀지\s*말|사귀긴\s*싫|고백\s*아니|농담|장난|거절|싫어)",
+    r"(?ш?吏\s*留??ш?湲?s*??怨좊갚\s*?꾨땲|?띾떞|?λ궃|嫄곗젅|?レ뼱)",
     re.IGNORECASE,
 )
 
@@ -606,14 +609,14 @@ def _record_confession_event(
     """
     Detect confession and persist event without LLM:
     - turn on confession pending
-    - append hardcoded fact text "누구에게 언제 몇 시에 고백받음"
+    - append hardcoded fact text "?꾧뎄?먭쾶 ?몄젣 紐??쒖뿉 怨좊갚諛쏆쓬"
     """
     if not _is_confession_message(message_text):
         return False
 
     now_kst = datetime.now(KST)
     user_label = (current_user.display_name or current_user.username or f"user-{current_user.id}").strip()
-    fact_text = f"{user_label}에게 {now_kst.strftime('%Y-%m-%d %H:%M')}에 고백받음"
+    fact_text = f"{user_label}?먭쾶 {now_kst.strftime('%Y-%m-%d %H:%M')}??怨좊갚諛쏆쓬"
 
     pair = db.query(UserPersonaRelationship).filter(
         UserPersonaRelationship.user_id == room.owner_id,
@@ -623,7 +626,7 @@ def _record_confession_event(
         pair = UserPersonaRelationship(
             user_id=room.owner_id,
             persona_id=room.persona_id,
-            relationship_category=room.relationship_category or "낯선 사람",
+            relationship_category=room.relationship_category or "??꽑 ?щ엺",
             relationship_score=room.v_relationship if room.v_relationship is not None else 20,
             likeability=room.v_likeability if room.v_likeability is not None else 50,
             erotic=room.v_erotic if room.v_erotic is not None else 30,
@@ -655,7 +658,7 @@ def _record_confession_event(
 
 
 def update_user_tokens(db: Session, user_id: int, token_count: int):
-    """유저의 누적 토큰 사용량과 마지막 활동 시간을 업데이트합니다."""
+    """?좎????꾩쟻 ?좏겙 ?ъ슜?됯낵 留덉?留??쒕룞 ?쒓컙???낅뜲?댄듃?⑸땲??"""
     user = db.query(User).filter(User.id == user_id).first()
     if user:
         user.total_tokens += token_count
@@ -670,32 +673,32 @@ def seed_world_map(db: Session):
             return
 
         locations = [
-            # 1. 루미나 시티 (Lumina City - 중심부)
-            {"district": "루미나 시티", "name": "루미나 광장", "category": "놀기", "description": "중심부 광장, 대형 분수대"},
-            {"district": "루미나 시티", "name": "코어 타워", "category": "업무", "description": "대기업 오피스, 마천루"},
-            {"district": "루미나 시티", "name": "스타필드 몰", "category": "놀기", "description": "고급 쇼핑몰, 영화관"},
-            {"district": "루미나 시티", "name": "빈즈 앤 바이트", "category": "업무", "description": "유명 프랜차이즈 카페"},
+            # 1. 猷⑤????쒗떚 (Lumina City - 以묒떖遺)
+            {"district": "猷⑤????쒗떚", "name": "猷⑤???愿묒옣", "category": "?湲?, "description": "以묒떖遺 愿묒옣, ???遺꾩닔?"},
+            {"district": "猷⑤????쒗떚", "name": "肄붿뼱 ???, "category": "?낅Т", "description": "?湲곗뾽 ?ㅽ뵾?? 留덉쿇猷?},
+            {"district": "猷⑤????쒗떚", "name": "?ㅽ??꾨뱶 紐?, "category": "?湲?, "description": "怨좉툒 ?쇳븨紐? ?곹솕愿"},
+            {"district": "猷⑤????쒗떚", "name": "鍮덉쫰 ??諛붿씠??, "category": "?낅Т", "description": "?좊챸 ?꾨옖李⑥씠利?移댄럹"},
             
-            # 2. 세렌 밸리 (Seren Valley - 자연)
-            {"district": "세렌 밸리", "name": "세렌 공원", "category": "휴식", "description": "조깅 트랙, 피크닉"},
-            {"district": "세렌 밸리", "name": "보태니컬 가든", "category": "휴식", "description": "희귀 식물, 독서"},
-            {"district": "세렌 밸리", "name": "리버사이드 산책로", "category": "휴식", "description": "강변 산책로, 데이트 코스"},
+            # 2. ?몃젋 諛몃━ (Seren Valley - ?먯뿰)
+            {"district": "?몃젋 諛몃━", "name": "?몃젋 怨듭썝", "category": "?댁떇", "description": "議곌퉭 ?몃옓, ?쇳겕??},
+            {"district": "?몃젋 諛몃━", "name": "蹂댄깭?덉뺄 媛??, "category": "?댁떇", "description": "?ш? ?앸Ъ, ?낆꽌"},
+            {"district": "?몃젋 諛몃━", "name": "由щ쾭?ъ씠???곗콉濡?, "category": "?댁떇", "description": "媛뺣? ?곗콉濡? ?곗씠??肄붿뒪"},
 
-            # 3. 에코 베이 (Echo Bay - 문화)
-            {"district": "에코 베이", "name": "더 갤러리", "category": "놀기", "description": "현대 미술 전시"},
-            {"district": "에코 베이", "name": "바이닐 펍", "category": "놀기", "description": "아날로그 음악 바"},
-            {"district": "에코 베이", "name": "씨사이드 데크", "category": "휴식", "description": "바다 전망대, 버스킹"},
-            {"district": "에코 베이", "name": "블루노트 재즈 클럽", "category": "놀기", "description": "저녁 라이브 공연"},
+            # 3. ?먯퐫 踰좎씠 (Echo Bay - 臾명솕)
+            {"district": "?먯퐫 踰좎씠", "name": "??媛ㅻ윭由?, "category": "?湲?, "description": "?꾨? 誘몄닠 ?꾩떆"},
+            {"district": "?먯퐫 踰좎씠", "name": "諛붿씠????, "category": "?湲?, "description": "?꾨궇濡쒓렇 ?뚯븙 諛?},
+            {"district": "?먯퐫 踰좎씠", "name": "?⑥궗?대뱶 ?고겕", "category": "?댁떇", "description": "諛붾떎 ?꾨쭩?, 踰꾩뒪??},
+            {"district": "?먯퐫 踰좎씠", "name": "釉붾（?명듃 ?ъ쫰 ?대읇", "category": "?湲?, "description": "????쇱씠釉?怨듭뿰"},
 
-            # 4. 더 하이브 (The Hive - 거주지)
-            {"district": "더 하이브", "name": "쉐어 하우스", "category": "집", "description": "이브 거주지"},
-            {"district": "더 하이브", "name": "24시 편의점", "category": "놀기", "description": "심야 간식, 편의점"},
-            {"district": "더 하이브", "name": "커뮤니티 센터", "category": "휴식", "description": "헬스장, 세탁실"},
+            # 4. ???섏씠釉?(The Hive - 嫄곗＜吏)
+            {"district": "???섏씠釉?, "name": "?먯뼱 ?섏슦??, "category": "吏?, "description": "?대툕 嫄곗＜吏"},
+            {"district": "???섏씠釉?, "name": "24???몄쓽??, "category": "?湲?, "description": "?ъ빞 媛꾩떇, ?몄쓽??},
+            {"district": "???섏씠釉?, "name": "而ㅻ??덊떚 ?쇳꽣", "category": "?댁떇", "description": "?ъ뒪?? ?명긽??},
 
-            # 5. 네온 디스트릭트 (Neon District - 밤문화)
-            {"district": "네온 디스트릭트", "name": "클럽 버텍스", "category": "놀기", "description": "댄스 플로어"},
-            {"district": "네온 디스트릭트", "name": "루프탑 바 2077", "category": "놀기", "description": "칵테일, 시티뷰"},
-            {"district": "네온 디스트릭트", "name": "게임 아케이드", "category": "놀기", "description": "레트로 게임, 다트"}
+            # 5. ?ㅼ삩 ?붿뒪?몃┃??(Neon District - 諛ㅻЦ??
+            {"district": "?ㅼ삩 ?붿뒪?몃┃??, "name": "?대읇 踰꾪뀓??, "category": "?湲?, "description": "?꾩뒪 ?뚮줈??},
+            {"district": "?ㅼ삩 ?붿뒪?몃┃??, "name": "猷⑦봽??諛?2077", "category": "?湲?, "description": "移듯뀒?? ?쒗떚酉?},
+            {"district": "?ㅼ삩 ?붿뒪?몃┃??, "name": "寃뚯엫 ?꾩??대뱶", "category": "?湲?, "description": "?덊듃濡?寃뚯엫, ?ㅽ듃"}
         ]
 
         print(">> STARTUP: Seeding Map Locations...")
@@ -705,14 +708,14 @@ def seed_world_map(db: Session):
     except Exception as e:
         print(f"Error seeding world map: {e}")
 
-# 초기 관리자 생성 (v1.4.2: 조잡한 시딩 제거 및 원본 체계 보호)
+# 珥덇린 愿由ъ옄 ?앹꽦 (v1.4.2: 議곗옟???쒕뵫 ?쒓굅 諛??먮낯 泥닿퀎 蹂댄샇)
 @app.on_event("startup")
 async def startup_initialization():
     print(">> STARTUP: Connecting to DB...")
     db = SessionLocal()
     print(">> STARTUP: DB Connected.")
 
-    # 1. 관리자 계정 생성
+    # 1. 愿由ъ옄 怨꾩젙 ?앹꽦
     admin_user = db.query(User).filter(User.is_admin == True).first()
     if not admin_user:
         print(">> STARTUP: Creating Admin User...")
@@ -729,12 +732,12 @@ async def startup_initialization():
     else:
         print(">> STARTUP: Admin Exists.")
 
-    # [v2.0.0] 스케줄러 시작 (매일 자정 자동 업데이트)
+    # [v2.0.0] ?ㅼ?以꾨윭 ?쒖옉 (留ㅼ씪 ?먯젙 ?먮룞 ?낅뜲?댄듃)
     scheduler = AEScheduler()
     scheduler.start()
 
-    # [v1.4.2] PromptTemplate 테이블은 비워두어 engine.py의 core_prompt가 우선 적용되게 함.
-    seed_world_map(db) # [v2.0.0] 맵 데이터 시딩
+    # [v1.4.2] PromptTemplate ?뚯씠釉붿? 鍮꾩썙?먯뼱 engine.py??core_prompt媛 ?곗꽑 ?곸슜?섍쾶 ??
+    seed_world_map(db) # [v2.0.0] 留??곗씠???쒕뵫
     _sync_admin_rooms_for_all_personas(db)
     print(">> STARTUP: Closing DB session...")
     db.close()
@@ -742,10 +745,10 @@ async def startup_initialization():
 
 
 # ---------------------------------------------------------
-# 1. 계정 관련 API (Auth)
+# 1. 怨꾩젙 愿??API (Auth)
 # ---------------------------------------------------------
 
-# [v2.0.0] 피드 API
+# [v2.0.0] ?쇰뱶 API
 @app.get("/api/feed")
 async def get_feed(
     current_user: Optional[User] = Depends(get_current_user),
@@ -779,7 +782,7 @@ async def get_feed(
 
     feed_data = []
     for post in posts:
-        # 작성자 정보 (이브 또는 유저)
+        # ?묒꽦???뺣낫 (?대툕 ?먮뒗 ?좎?)
         author_type = "persona" if post.persona else "user"
         author_name = "Unknown"
         author_image = None
@@ -791,8 +794,7 @@ async def get_feed(
             author_name = author.name
             author_image = author.profile_image_url
             author_id = author.id
-            # [Phase 5] 게스트 모드 대응
-            if current_user:
+            # [Phase 5] 寃뚯뒪??紐⑤뱶 ???            if current_user:
                 my_room_id = user_room_map.get(author.id)
         elif post.user:
             u = post.user
@@ -800,7 +802,7 @@ async def get_feed(
             author_image = u.profile_image_url
             author_id = u.id
 
-        # 댓글 목록
+        # ?볤? 紐⑸줉
         comments = []
         for c in post.comments:
             c_author_name = "Unknown"
@@ -836,8 +838,8 @@ async def get_feed(
                 "can_delete": c_can_delete
             })
 
-        # 날짜 포맷 (MM.DD (요일) HH:MM)
-        days = ["월", "화", "수", "목", "금", "토", "일"]
+        # ?좎쭨 ?щ㎎ (MM.DD (?붿씪) HH:MM)
+        days = ["??, "??, "??, "紐?, "湲?, "??, "??]
         # Display based on actual creation time to avoid legacy scheduled_at timezone drift.
         dt = _to_kst(post.created_at) or post.created_at
         day_str = days[dt.weekday()]
@@ -883,7 +885,7 @@ async def get_feed(
             "author_name": author_name,
             "author_image": author_image,
             "author_id": author_id,
-            "room_id": my_room_id, # 클릭 시 이동할 채팅방 ID
+            "room_id": my_room_id, # ?대┃ ???대룞??梨꾪똿諛?ID
             "content": post.content,
             "tagged_personas": tagged_personas_payload,
             "tag_activity": post.tag_activity,
@@ -894,7 +896,7 @@ async def get_feed(
             "like_count": post.like_count,
             "has_liked": has_liked,
             "can_delete": post_can_delete,
-            "created_at": date_str, # MM.DD (요일) HH:MM
+            "created_at": date_str, # MM.DD (?붿씪) HH:MM
             "comments": comments
         })
         
@@ -910,40 +912,76 @@ async def get_feed(
 @app.get("/api/ticker")
 async def get_live_ticker(db: Session = Depends(get_db)):
     now_kst = datetime.now(KST)
-    kst_midnight = now_kst.replace(hour=0, minute=0, second=0, microsecond=0)
-    utc_midnight_naive = kst_midnight.astimezone(timezone.utc).replace(tzinfo=None)
-    today_feed_count = db.query(FeedPost).filter(
-        FeedPost.is_published == True,
-        FeedPost.created_at >= utc_midnight_naive,
-    ).count()
-
     snapshot = get_ticker_snapshot(limit=24)
     active_eves = int(snapshot.get("active_eve_count") or 0)
-    events = snapshot.get("events", []) if isinstance(snapshot.get("events"), list) else []
 
-    lines = [
-        f"Active eves now: {active_eves}",
-        f"Feed posts today: {today_feed_count}",
-    ]
-    for row in events:
-        if not isinstance(row, dict):
+    def _is_recent_kst(ts_obj, seconds: int = 180) -> bool:
+        if not isinstance(ts_obj, datetime):
+            return False
+        try:
+            ts = ts_obj if ts_obj.tzinfo else ts_obj.replace(tzinfo=KST)
+            return (now_kst - ts).total_seconds() <= seconds
+        except Exception:
+            return False
+
+    active_user_ids = set()
+    eve_user_conversation_count = 0
+    for v in list(volatile_memory.values()):
+        if not isinstance(v, dict):
             continue
-        text = str(row.get("text") or "").strip()
-        if text:
-            lines.append(text)
+        uid = v.get("current_user_id")
+        if uid is None:
+            continue
+
+        ws_connected = False
+        ws = v.get("websocket")
+        try:
+            ws_connected = bool(ws) and ws.client_state == WebSocketState.CONNECTED
+        except Exception:
+            ws_connected = False
+
+        status_online = str(v.get("status") or "").lower() == "online"
+        ticking = bool(v.get("is_ticking"))
+        recent_user = _is_recent_kst(v.get("last_user_ts"), seconds=300)
+        recent_interaction = _is_recent_kst(v.get("last_interaction_ts"), seconds=300)
+        is_active_room = ws_connected or status_online or ticking or recent_user or recent_interaction
+        if not is_active_room:
+            continue
+
+        try:
+            active_user_ids.add(int(uid))
+        except Exception:
+            pass
+        eve_user_conversation_count += 1
+
+    if not active_user_ids:
+        # Fallback for app users active outside chat websocket.
+        cutoff_users = (now_kst - timedelta(minutes=10)).replace(tzinfo=None)
+        active_user_ids = {
+            int(row[0]) for row in db.query(User.id).filter(User.last_active >= cutoff_users).all()
+        }
+
+    cutoff = (now_kst - timedelta(minutes=10)).replace(tzinfo=None)
+    eve_eve_conversation_count = db.query(EveRelationship).filter(
+        EveRelationship.last_talked != None,
+        EveRelationship.last_talked >= cutoff,
+    ).count()
+    conversation_count = eve_user_conversation_count + eve_eve_conversation_count
 
     return {
         "server_time_kst": now_kst.strftime("%Y-%m-%d %H:%M:%S"),
         "active_eves": active_eves,
-        "today_feed_count": today_feed_count,
-        "items": lines[-30:],
+        "active_users": len(active_user_ids),
+        "conversation_count": conversation_count,
+        "eve_user_conversation_count": eve_user_conversation_count,
+        "eve_eve_conversation_count": eve_eve_conversation_count,
     }
 
 
 @app.post("/api/feed/post")
 async def create_user_feed_post(data: dict = Body(...), current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     if not current_user:
-        raise HTTPException(status_code=401, detail="로그인이 필요합니다.")
+        raise HTTPException(status_code=401, detail="濡쒓렇?몄씠 ?꾩슂?⑸땲??")
 
     content = str(data.get("content") or "").strip()
     image_url = str(data.get("image_url") or "").strip() or None
@@ -951,9 +989,9 @@ async def create_user_feed_post(data: dict = Body(...), current_user: User = Dep
     location_district = str(data.get("location_district") or "").strip() or None
 
     if not content:
-        raise HTTPException(status_code=400, detail="내용을 입력해주세요.")
+        raise HTTPException(status_code=400, detail="?댁슜???낅젰?댁＜?몄슂.")
     if len(content) > 1000:
-        raise HTTPException(status_code=400, detail="내용은 1000자 이하여야 합니다.")
+        raise HTTPException(status_code=400, detail="?댁슜? 1000???댄븯?ъ빞 ?⑸땲??")
 
     image_prompt = None
     if image_url:
@@ -974,9 +1012,6 @@ async def create_user_feed_post(data: dict = Body(...), current_user: User = Dep
     db.add(post)
     db.commit()
     db.refresh(post)
-    author_label = current_user.display_name or current_user.username or "User"
-    topic = _summarize_topic_text(content, max_len=30)
-    push_ticker_event(f"{author_label} posted: {topic}", kind="feed")
 
     return {"status": "success", "post_id": post.id}
 
@@ -1004,7 +1039,7 @@ async def add_feed_comment(post_id: int, data: dict = Body(...), current_user: U
     db.commit()
     db.refresh(comment)
     
-    # [Phase 4] 트리거: 유저 댓글 이벤트 기록 후 백그라운드에서 DM 반응 전송
+    # [Phase 4] ?몃━嫄? ?좎? ?볤? ?대깽??湲곕줉 ??諛깃렇?쇱슫?쒖뿉??DM 諛섏쓳 ?꾩넚
     import engine
     import asyncio
     asyncio.create_task(engine.handle_user_comment_reaction(post.id, comment.id, current_user.id))
@@ -1015,7 +1050,7 @@ async def add_feed_comment(post_id: int, data: dict = Body(...), current_user: U
 @app.delete("/api/feed/{post_id}")
 async def delete_feed_post(post_id: int, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     if not current_user:
-        raise HTTPException(status_code=401, detail="로그인이 필요합니다.")
+        raise HTTPException(status_code=401, detail="濡쒓렇?몄씠 ?꾩슂?⑸땲??")
 
     post = db.query(FeedPost).filter(FeedPost.id == post_id).first()
     if not post:
@@ -1023,7 +1058,7 @@ async def delete_feed_post(post_id: int, current_user: User = Depends(get_curren
 
     if not current_user.is_admin:
         if not post.user_id or post.user_id != current_user.id:
-            raise HTTPException(status_code=403, detail="삭제 권한이 없습니다.")
+            raise HTTPException(status_code=403, detail="??젣 沅뚰븳???놁뒿?덈떎.")
 
     db.delete(post)
     db.commit()
@@ -1033,7 +1068,7 @@ async def delete_feed_post(post_id: int, current_user: User = Depends(get_curren
 @app.delete("/api/feed/comment/{comment_id}")
 async def delete_feed_comment(comment_id: int, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     if not current_user:
-        raise HTTPException(status_code=401, detail="로그인이 필요합니다.")
+        raise HTTPException(status_code=401, detail="濡쒓렇?몄씠 ?꾩슂?⑸땲??")
 
     comment = db.query(FeedComment).filter(FeedComment.id == comment_id).first()
     if not comment:
@@ -1041,7 +1076,7 @@ async def delete_feed_comment(comment_id: int, current_user: User = Depends(get_
 
     if not current_user.is_admin:
         if not comment.user_id or comment.user_id != current_user.id:
-            raise HTTPException(status_code=403, detail="삭제 권한이 없습니다.")
+            raise HTTPException(status_code=403, detail="??젣 沅뚰븳???놁뒿?덈떎.")
 
     db.delete(comment)
     db.commit()
@@ -1077,20 +1112,19 @@ async def toggle_feed_like(post_id: int, current_user: User = Depends(get_curren
 @app.post("/register")
 async def register(data: dict = Body(...), db: Session = Depends(get_db)):
     if db.query(User).filter(User.username == data['username']).first():
-        raise HTTPException(status_code=400, detail="이미 존재하는 아이디입니다.")
+        raise HTTPException(status_code=400, detail="?대? 議댁옱?섎뒗 ?꾩씠?붿엯?덈떎.")
     new_user = User(
         username=data['username'],
         hashed_password=get_password_hash(data['password']),
         is_admin=False,
         total_tokens=0,
-        image_count=0,  # v1.2.0 초기화
-        created_at=datetime.utcnow(),
+        image_count=0,  # v1.2.0 珥덇린??        created_at=datetime.utcnow(),
         last_active=datetime.utcnow())
     db.add(new_user)
     db.commit()
     db.refresh(new_user)
 
-    # [Phase 5] 새 가입 유저 빈 친구목록 설계 (자동 친구 추가 기능 제거)
+    # [Phase 5] ??媛???좎? 鍮?移쒓뎄紐⑸줉 ?ㅺ퀎 (?먮룞 移쒓뎄 異붽? 湲곕뒫 ?쒓굅)
     
     db.commit()
     return {"status": "success"}
@@ -1107,7 +1141,7 @@ async def login(request: Request, data: dict = Body(...), db: Session = Depends(
     user = db.query(User).filter(User.username == username).first()
     if not user or not verify_password(data['password'], user.hashed_password):
         _record_login_failure(key)
-        raise HTTPException(status_code=401, detail="아이디 또는 비밀번호가 틀렸습니다.")
+        raise HTTPException(status_code=401, detail="?꾩씠???먮뒗 鍮꾨?踰덊샇媛 ??몄뒿?덈떎.")
     _clear_login_failures(key)
 
     access_token = create_access_token(data={"sub": user.username})
@@ -1116,15 +1150,15 @@ async def login(request: Request, data: dict = Body(...), db: Session = Depends(
         "token_type": "bearer",
         "is_admin": user.is_admin,
         "username": user.username,
-        "onboarding_completed": user.display_name is not None  # 온보딩 완료 여부
+        "onboarding_completed": user.display_name is not None  # ?⑤낫???꾨즺 ?щ?
     }
 
 
 # ---------------------------------------------------------
-# 1.5 사용자 프로필 및 일반 API (v1.5.0)
+# 1.5 ?ъ슜???꾨줈??諛??쇰컲 API (v1.5.0)
 # ---------------------------------------------------------
 
-# [Phase 5] 모달 미니 프로필용 퍼소나 정보 조회
+# [Phase 5] 紐⑤떖 誘몃땲 ?꾨줈?꾩슜 ?쇱냼???뺣낫 議고쉶
 @app.get("/api/public/persona/{persona_id}")
 async def get_public_persona(
     persona_id: int,
@@ -1133,7 +1167,7 @@ async def get_public_persona(
 ):
     p = db.query(Persona).filter(Persona.id == persona_id).first()
     if not p:
-        raise HTTPException(status_code=404, detail="이브를 찾을 수 없습니다.")
+        raise HTTPException(status_code=404, detail="?대툕瑜?李얠쓣 ???놁뒿?덈떎.")
     
     details = p.profile_details or {}
     intro_text = str(details.get("hook") or "").strip()
@@ -1154,9 +1188,9 @@ async def get_public_persona(
 
 @app.get("/api/user/profile")
 async def get_my_profile(current_user: User = Depends(get_current_user)):
-    """현재 로그인한 사용자의 프로필 조회"""
+    """?꾩옱 濡쒓렇?명븳 ?ъ슜?먯쓽 ?꾨줈??議고쉶"""
     if not current_user:
-        raise HTTPException(status_code=401, detail="로그인이 필요합니다.")
+        raise HTTPException(status_code=401, detail="濡쒓렇?몄씠 ?꾩슂?⑸땲??")
     return {
         "id": current_user.id,
         "username": current_user.username,
@@ -1213,7 +1247,7 @@ async def update_profile_images(data: dict = Body(...),
                                 current_user: User = Depends(get_current_user),
                                 db: Session = Depends(get_db)):
     if not current_user:
-        raise HTTPException(status_code=401, detail="로그인이 필요합니다.")
+        raise HTTPException(status_code=401, detail="濡쒓렇?몄씠 ?꾩슂?⑸땲??")
     urls = data.get("image_urls")
     if not isinstance(urls, list):
         raise HTTPException(status_code=400, detail="image_urls must be a list")
@@ -1263,14 +1297,13 @@ async def update_user_settings(settings: SettingsUpdate,
     db.commit()
     return {"status": "success"}
 
-# [Phase 5] 추천 친구 (Suggested Eves) API
+# [Phase 5] 異붿쿇 移쒓뎄 (Suggested Eves) API
 @app.get("/api/public/personas/suggested")
 async def get_suggested_personas(limit: int = 5, current_user: Optional[User] = Depends(get_current_user), db: Session = Depends(get_db)):
-    # 모든 이브를 가져옵니다 (is_active 컬럼이 없어 전체 대상)
+    # 紐⑤뱺 ?대툕瑜?媛?몄샃?덈떎 (is_active 而щ읆???놁뼱 ?꾩껜 ???
     query = db.query(Persona)
     
-    # 로그인한 유저라면 이미 친구인 이브는 제외합니다
-    if current_user:
+    # 濡쒓렇?명븳 ?좎??쇰㈃ ?대? 移쒓뎄???대툕???쒖쇅?⑸땲??    if current_user:
         existing_friend_ids = [
             r.persona_id for r in db.query(ChatRoom).filter(ChatRoom.owner_id == current_user.id).all()
         ]
@@ -1278,7 +1311,7 @@ async def get_suggested_personas(limit: int = 5, current_user: Optional[User] = 
             query = query.filter(Persona.id.notin_(existing_friend_ids))
             
     personas = query.all()
-    # 랜덤하게 섞어서 반환
+    # ?쒕뜡?섍쾶 ?욎뼱??諛섑솚
     if len(personas) > limit:
         personas = random.sample(personas, limit)
         
@@ -1290,26 +1323,26 @@ async def get_suggested_personas(limit: int = 5, current_user: Optional[User] = 
             "id": p.id,
             "name": p.name,
             "profile_image_url": p.profile_image_url,
-            "intro": intro_text or "새로운 이브를 만나보세요!"
+            "intro": intro_text or "?덈줈???대툕瑜?留뚮굹蹂댁꽭??"
         })
     return result
 
-# [Phase 5] 수동 친구 추가 API
+# [Phase 5] ?섎룞 移쒓뎄 異붽? API
 @app.post("/api/friends/{persona_id}/add")
 async def add_friend(persona_id: int, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     if not current_user:
-        raise HTTPException(status_code=401, detail="로그인이 필요합니다.")
+        raise HTTPException(status_code=401, detail="濡쒓렇?몄씠 ?꾩슂?⑸땲??")
         
     p = db.query(Persona).filter(Persona.id == persona_id).first()
     if not p:
-        raise HTTPException(status_code=404, detail="해당 이브를 찾을 수 없습니다.")
+        raise HTTPException(status_code=404, detail="?대떦 ?대툕瑜?李얠쓣 ???놁뒿?덈떎.")
         
-    # 중복 체크
+    # 以묐났 泥댄겕
     exists = db.query(ChatRoom).filter(ChatRoom.owner_id == current_user.id, ChatRoom.persona_id == p.id).first()
     if exists:
-        return {"status": "success", "room_id": exists.id, "message": "이미 친구입니다."}
+        return {"status": "success", "room_id": exists.id, "message": "?대? 移쒓뎄?낅땲??"}
         
-    # 채팅방 생성 (친구 맺기)
+    # 梨꾪똿諛??앹꽦 (移쒓뎄 留브린)
     new_room = ChatRoom(
         owner_id=current_user.id,
         persona_id=p.id,
@@ -1320,13 +1353,13 @@ async def add_friend(persona_id: int, current_user: User = Depends(get_current_u
     )
     db.add(new_room)
     
-    # 이브의 user_registry 업데이트
+    # ?대툕??user_registry ?낅뜲?댄듃
     registry = list(p.user_registry or [])
     if not any(e.get('user_id') == current_user.id for e in registry):
         registry.append({
             "user_id": current_user.id,
             "display_name": current_user.display_name or current_user.username,
-            "relationship": "낯선 사람",
+            "relationship": "??꽑 ?щ엺",
             "last_talked": None,
             "memo": ""
         })
@@ -1345,9 +1378,9 @@ async def add_friend(persona_id: int, current_user: User = Depends(get_current_u
 async def upload_profile_image(data: dict = Body(...),
                                current_user: User = Depends(get_current_user),
                                db: Session = Depends(get_db)):
-    """프로필 이미지 URL 저장 (Base64 또는 URL)"""
+    """?꾨줈???대?吏 URL ???(Base64 ?먮뒗 URL)"""
     if not current_user:
-        raise HTTPException(status_code=401, detail="로그인이 필요합니다.")
+        raise HTTPException(status_code=401, detail="濡쒓렇?몄씠 ?꾩슂?⑸땲??")
     
     image_url = str(data.get('image_url') or "").strip()
     if not image_url:
@@ -1363,17 +1396,17 @@ async def upload_profile_image(data: dict = Body(...),
 
 @app.get("/api/user/onboarding-status")
 async def check_onboarding(current_user: User = Depends(get_current_user)):
-    """온보딩 완료 상태 확인"""
+    """?⑤낫???꾨즺 ?곹깭 ?뺤씤"""
     if not current_user:
-        raise HTTPException(status_code=401, detail="로그인이 필요합니다.")
+        raise HTTPException(status_code=401, detail="濡쒓렇?몄씠 ?꾩슂?⑸땲??")
     return {"completed": current_user.display_name is not None}
 
 
 @app.get("/api/user/settings")
 async def get_settings(current_user: User = Depends(get_current_user)):
-    """사용자 설정 조회"""
+    """?ъ슜???ㅼ젙 議고쉶"""
     if not current_user:
-        raise HTTPException(status_code=401, detail="로그인이 필요합니다.")
+        raise HTTPException(status_code=401, detail="濡쒓렇?몄씠 ?꾩슂?⑸땲??")
     
     default_settings = {
         'eve_gender_filter': 'all',
@@ -1388,9 +1421,9 @@ async def get_settings(current_user: User = Depends(get_current_user)):
 async def update_settings(data: dict = Body(...),
                           current_user: User = Depends(get_current_user),
                           db: Session = Depends(get_db)):
-    """사용자 설정 수정"""
+    """?ъ슜???ㅼ젙 ?섏젙"""
     if not current_user:
-        raise HTTPException(status_code=401, detail="로그인이 필요합니다.")
+        raise HTTPException(status_code=401, detail="濡쒓렇?몄씠 ?꾩슂?⑸땲??")
     
     user = db.query(User).filter(User.id == current_user.id).first()
     current_settings = user.settings or {}
@@ -1401,15 +1434,14 @@ async def update_settings(data: dict = Body(...),
 
 
 # ---------------------------------------------------------
-# 2. 관리자 전용 API (Admin) - v1.4.2 고도화
-# ---------------------------------------------------------
+# 2. 愿由ъ옄 ?꾩슜 API (Admin) - v1.4.2 怨좊룄??# ---------------------------------------------------------
 
 
 @app.get("/admin/users")
 async def admin_get_users(current_user: User = Depends(get_current_user),
                           db: Session = Depends(get_db)):
     if not current_user or not current_user.is_admin:
-        raise HTTPException(status_code=403, detail="권한이 없습니다.")
+        raise HTTPException(status_code=403, detail="沅뚰븳???놁뒿?덈떎.")
     users = db.query(User).all()
 
     user_list = []
@@ -1431,7 +1463,7 @@ async def admin_get_users(current_user: User = Depends(get_current_user),
     return user_list
 
 
-# [v2.0.0 Refactor] 관리자: 이브 중심 목록 조회 (세계관 내 이브 목록)
+# [v2.0.0 Refactor] 愿由ъ옄: ?대툕 以묒떖 紐⑸줉 議고쉶 (?멸퀎愿 ???대툕 紐⑸줉)
 @app.get("/admin/eves")
 async def admin_get_all_eves(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     if not current_user or not current_user.is_admin:
@@ -1441,7 +1473,7 @@ async def admin_get_all_eves(current_user: User = Depends(get_current_user), db:
     eve_list = []
     
     for p in personas:
-        # 해당 이브와 연결된 채팅방들 조회
+        # ?대떦 ?대툕? ?곌껐??梨꾪똿諛⑸뱾 議고쉶
         rooms = db.query(ChatRoom).filter(ChatRoom.persona_id == p.id).all()
         room_data = []
         for r in rooms:
@@ -1450,7 +1482,7 @@ async def admin_get_all_eves(current_user: User = Depends(get_current_user), db:
             
             room_data.append({
                 "room_id": r.id,
-                "user_name": username, # 누구와의 채팅방인지
+                "user_name": username, # ?꾧뎄???梨꾪똿諛⑹씤吏
                 "is_active": r.id in volatile_memory
             })
             
@@ -1469,17 +1501,17 @@ async def admin_get_all_eves(current_user: User = Depends(get_current_user), db:
     return eve_list
 
 
-# [v3.4.0] 관리자 전용 이브 상세 대시보드 데이터 조회
+# [v3.4.0] 愿由ъ옄 ?꾩슜 ?대툕 ?곸꽭 ??쒕낫???곗씠??議고쉶
 @app.get("/admin/persona/{persona_id}/details")
 async def admin_get_persona_details(persona_id: int, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     if not current_user or not current_user.is_admin:
-        raise HTTPException(status_code=403, detail="권한이 없습니다.")
+        raise HTTPException(status_code=403, detail="沅뚰븳???놁뒿?덈떎.")
 
     p = db.query(Persona).filter(Persona.id == persona_id).first()
     if not p:
-        raise HTTPException(status_code=404, detail="이브를 찾을 수 없습니다.")
+        raise HTTPException(status_code=404, detail="?대툕瑜?李얠쓣 ???놁뒿?덈떎.")
 
-    # 1. 최근 피드 활동 (최대 10개)
+    # 1. 理쒓렐 ?쇰뱶 ?쒕룞 (理쒕? 10媛?
     posts = db.query(FeedPost).filter(FeedPost.persona_id == p.id).order_by(FeedPost.created_at.desc()).limit(10).all()
     feed_data = [{
         "id": f.id,
@@ -1488,8 +1520,7 @@ async def admin_get_persona_details(persona_id: int, current_user: User = Depend
         "created_at": (_to_kst(f.created_at) or f.created_at).strftime("%Y-%m-%d %H:%M")
     } for f in posts]
 
-    # 2. 이브-이브 친구 목록 및 관계
-    rels = db.query(EveRelationship).filter((EveRelationship.persona_a_id == p.id) | (EveRelationship.persona_b_id == p.id)).all()
+    # 2. ?대툕-?대툕 移쒓뎄 紐⑸줉 諛?愿怨?    rels = db.query(EveRelationship).filter((EveRelationship.persona_a_id == p.id) | (EveRelationship.persona_b_id == p.id)).all()
     eve_friends = []
     conversations = []
     
@@ -1506,20 +1537,39 @@ async def admin_get_persona_details(persona_id: int, current_user: User = Depend
             if rel.conversation_summaries:
                 conversations.extend([{"with": other_p.name, "summary": s} for s in rel.conversation_summaries])
 
-    # 3. 유저 친구 목록 (ChatRoom을 통해)
+    # 3. ?좎? 移쒓뎄 紐⑸줉 (ChatRoom???듯빐)
     rooms = db.query(ChatRoom).filter(ChatRoom.persona_id == p.id).all()
+    pair_rows = db.query(UserPersonaRelationship).filter(
+        UserPersonaRelationship.persona_id == p.id
+    ).all()
+    pair_by_user = {}
+    for pair in pair_rows:
+        if pair and pair.user_id is not None:
+            pair_by_user[int(pair.user_id)] = pair
+
     for r in rooms:
         owner = db.query(User).filter(User.id == r.owner_id).first()
         if owner:
+            pair = pair_by_user.get(int(owner.id))
+            rel_label = str(
+                (pair.relationship_category if pair else None)
+                or r.relationship_category
+                or "낯선 사람"
+            ).strip()
+            rel_summary = str(
+                (pair.relationship_summary_3line if pair else None)
+                or getattr(r, "relationship_summary_3line", None)
+                or ""
+            ).strip()
             eve_friends.append({
                 "type": "USER",
-                "name": owner.username,
-                "relationship": "친구",
+                "name": owner.display_name or owner.username,
+                "relationship": rel_label,
+                "relationship_summary": rel_summary,
                 "interactions": "-"
             })
 
-    # 최신순 정렬 대화
-    conversations.reverse()
+    # 理쒖떊???뺣젹 ???    conversations.reverse()
 
     return {
         "id": p.id,
@@ -1530,8 +1580,7 @@ async def admin_get_persona_details(persona_id: int, current_user: User = Depend
         "shared_memory": p.shared_memory or [],
         "feed_posts": feed_data,
         "friends": eve_friends,
-        "conversations": conversations[:20]  # 최근 20개
-    }
+        "conversations": conversations[:20]  # 理쒓렐 20媛?    }
 
 
 @app.get("/admin/user/{user_id}/detail")
@@ -1539,7 +1588,7 @@ async def admin_user_detail(user_id: int,
                             current_user: User = Depends(get_current_user),
                             db: Session = Depends(get_db)):
     if not current_user or not current_user.is_admin:
-        raise HTTPException(status_code=403, detail="권한이 없습니다.")
+        raise HTTPException(status_code=403, detail="沅뚰븳???놁뒿?덈떎.")
 
     rooms = db.query(ChatRoom).filter(ChatRoom.owner_id == user_id).all()
 
@@ -1562,7 +1611,7 @@ async def admin_user_detail(user_id: int,
             "history_count":
             len(r.history) if r.history else 0,
             "last_summary":
-            r.history[-1]['content'] if r.history else "내역 없음",
+            r.history[-1]['content'] if r.history else "?댁뿭 ?놁쓬",
             "model_id": r.model_id,
             "is_frozen": r.is_frozen
         })
@@ -1574,7 +1623,7 @@ async def admin_delete_user(user_id: int,
                             current_user: User = Depends(get_current_user),
                             db: Session = Depends(get_db)):
     if not current_user or not current_user.is_admin:
-        raise HTTPException(status_code=403, detail="권한이 없습니다.")
+        raise HTTPException(status_code=403, detail="沅뚰븳???놁뒿?덈떎.")
     target_user = db.query(User).filter(User.id == user_id).first()
     if target_user:
         db.delete(target_user)
@@ -1587,42 +1636,42 @@ async def admin_bulk_delete_personas(data: dict = Body(...),
                                      current_user: User = Depends(get_current_user),
                                      db: Session = Depends(get_db)):
     if not current_user or not current_user.is_admin:
-        raise HTTPException(status_code=403, detail="권한이 없습니다.")
+        raise HTTPException(status_code=403, detail="沅뚰븳???놁뒿?덈떎.")
 
     persona_ids = data.get("ids", [])
     if not persona_ids:
         return {"status": "no_ids"}
 
     try:
-        # 1. 피드 댓글 삭제 (해당 페르소나가 쓴 댓글 + 해당 페르소나의 게시물에 달린 댓글)
-        # 먼저 페르소나의 게시물 ID들을 가져옴
+        # 1. ?쇰뱶 ?볤? ??젣 (?대떦 ?섎Ⅴ?뚮굹媛 ???볤? + ?대떦 ?섎Ⅴ?뚮굹??寃뚯떆臾쇱뿉 ?щ┛ ?볤?)
+        # 癒쇱? ?섎Ⅴ?뚮굹??寃뚯떆臾?ID?ㅼ쓣 媛?몄샂
         post_ids = [p[0] for p in db.query(FeedPost.id).filter(FeedPost.persona_id.in_(persona_ids)).all()]
         
-        # 페르소나가 쓴 댓글 삭제
+        # ?섎Ⅴ?뚮굹媛 ???볤? ??젣
         db.query(FeedComment).filter(FeedComment.persona_id.in_(persona_ids)).delete(synchronize_session=False)
-        # 페르소나의 게시물에 달린 다른 사람들의 댓글 삭제
+        # ?섎Ⅴ?뚮굹??寃뚯떆臾쇱뿉 ?щ┛ ?ㅻⅨ ?щ엺?ㅼ쓽 ?볤? ??젣
         if post_ids:
             db.query(FeedComment).filter(FeedComment.post_id.in_(post_ids)).delete(synchronize_session=False)
 
-        # 2. scheduled_actions에서 해당 피드 게시물 참조 행 먼저 삭제 (FK 제약 해소)
+        # 2. scheduled_actions?먯꽌 ?대떦 ?쇰뱶 寃뚯떆臾?李몄“ ??癒쇱? ??젣 (FK ?쒖빟 ?댁냼)
         if post_ids:
             from sqlalchemy import text
             placeholders = ",".join(str(i) for i in post_ids)
             db.execute(text(f"DELETE FROM scheduled_actions WHERE target_post_id IN ({placeholders})"))
 
-        # 3. 피드 게시물 삭제
+        # 3. ?쇰뱶 寃뚯떆臾???젣
         db.query(FeedPost).filter(FeedPost.persona_id.in_(persona_ids)).delete(
             synchronize_session=False)
 
-        # 3. 채팅방 삭제 (Persona 삭제 전 필수)
+        # 3. 梨꾪똿諛???젣 (Persona ??젣 ???꾩닔)
         db.query(ChatRoom).filter(ChatRoom.persona_id.in_(persona_ids)).delete(
             synchronize_session=False)
 
-        # 4. 이브 간의 관계 삭제
+        # 4. ?대툕 媛꾩쓽 愿怨???젣
         db.query(EveRelationship).filter(EveRelationship.persona_a_id.in_(persona_ids)).delete(synchronize_session=False)
         db.query(EveRelationship).filter(EveRelationship.persona_b_id.in_(persona_ids)).delete(synchronize_session=False)
 
-        # 5. 페르소나 삭제
+        # 5. ?섎Ⅴ?뚮굹 ??젣
         db.query(Persona).filter(Persona.id.in_(persona_ids)).delete(
             synchronize_session=False)
 
@@ -1634,7 +1683,7 @@ async def admin_bulk_delete_personas(data: dict = Body(...),
         print(f">> ADMIN ERROR: Bulk delete failed: {str(e)}")
         import traceback
         traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"삭제 중 서버 오류가 발생했습니다: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"??젣 以??쒕쾭 ?ㅻ쪟媛 諛쒖깮?덉뒿?덈떎: {str(e)}")
 
 
 @app.get("/admin/room/{room_id}/volatile")
@@ -1645,7 +1694,7 @@ async def admin_get_volatile(room_id: int, current_user: User = Depends(get_curr
         return {"error": "Room not active in memory"}
 
     vs = volatile_memory[room_id]
-    # 락 객체 및 웹소켓 객체 등 직렬화 불가능한 항목 제외
+    # ??媛앹껜 諛??뱀냼耳?媛앹껜 ??吏곷젹??遺덇??ν븳 ??ぉ ?쒖쇅
     safe_vs = {k: v for k, v in vs.items() if k not in ['lock', 'websocket']}
     return safe_vs
 
@@ -1961,7 +2010,7 @@ async def admin_ghost_write(room_id: int, data: dict = Body(...), current_user: 
                 room.history = vs['ram_history'][-100:]
                 db.commit()
 
-            # [v1.4.2] 실시간 전송 보장
+            # [v1.4.2] ?ㅼ떆媛??꾩넚 蹂댁옣
             if vs.get('websocket') and vs['websocket'].client_state == WebSocketState.CONNECTED:
                 await vs['websocket'].send_json({
                     "responses": [{"text": text, "ts": ts}] if role == "assistant" else [],
@@ -1989,7 +2038,7 @@ async def admin_global_notice(data: dict = Body(...), current_user: User = Depen
             ts = datetime.now(KST).strftime("%H:%M:%S")
             msg = {
                 "role": "system",
-                "content": f"[공지] {data['content']}",
+                "content": f"[怨듭?] {data['content']}",
                 "ts": ts
             }
             vs['ram_history'].append(msg)
@@ -2003,14 +2052,14 @@ async def admin_global_notice(data: dict = Body(...), current_user: User = Depen
     return {"status": "success", "notified_rooms": count}
 
 # ---------------------------------------------------------
-# [v3.6.0] 관리자: 이브 배치 생성기 (Phase 1)
+# [v3.6.0] 愿由ъ옄: ?대툕 諛곗튂 ?앹꽦湲?(Phase 1)
 # ---------------------------------------------------------
 import uuid
 
 batch_status = {}  # { job_id: { total, created, failed, done } }
 
 def build_ethnicity_prompt(white: int, black: int, asian: int) -> str:
-    """인종 가중치에서 ±1~5 랜덤 진동 후 합이 100이 되도록 정규화"""
+    """?몄쥌 媛以묒튂?먯꽌 짹1~5 ?쒕뜡 吏꾨룞 ???⑹씠 100???섎룄濡??뺢퇋??""
     def jitter(v): return max(0, v + random.randint(-5, 5))
     w, b, a = jitter(white), jitter(black), jitter(asian)
     total = w + b + a
@@ -2036,8 +2085,8 @@ async def create_single_eve(white: int, black: int, asian: int, db: Session, fem
         "ISTJ", "ISFJ", "INFJ", "INTJ", "ISTP", "ISFP", "INFP", "INTP", "ESTP",
         "ESFP", "ENFP", "ENTP", "ESTJ", "ESFJ", "ENFJ", "ENTJ"
     ]
-    # 여성 비율에 따른 성별 결정
-    gender = "여성" if random.randint(0, 99) < female_percent else "남성"
+    # ?ъ꽦 鍮꾩쑉???곕Ⅸ ?깅퀎 寃곗젙
+    gender = "?ъ꽦" if random.randint(0, 99) < female_percent else "?⑥꽦"
     age = random.randint(19, 36)
     mbti = random.choice(mbtis)
     
@@ -2081,7 +2130,7 @@ async def create_single_eve(white: int, black: int, asian: int, db: Session, fem
     ethnicity_prompt = build_ethnicity_prompt(white, black, asian) if multinational else "Korean"
     
     try:
-        face_look = "beautiful korean" if gender == "여성" else "handsome korean"
+        face_look = "beautiful korean" if gender == "?ъ꽦" else "handsome korean"
         base_prompt = f"passport photo, {face_look}, {ethnicity_prompt}, neutral expression, white background, {gender}, {age} years old"
         base_result = await asyncio.wait_for(
             asyncio.to_thread(
@@ -2095,7 +2144,7 @@ async def create_single_eve(white: int, black: int, asian: int, db: Session, fem
             face_base_url = base_result['images'][0]['url']
             
         if face_base_url:
-            if gender == "여성":
+            if gender == "?ъ꽦":
                 profile_prompt = f"close-up face portrait, candid Instagram dating profile photo, {image_prompt}, ultra realistic, low quality smartphone snapshot"
             else:
                 profile_prompt = f"candid Instagram dating profile photo, {image_prompt}, ultra realistic, low quality smartphone snapshot"
@@ -2123,7 +2172,7 @@ async def create_single_eve(white: int, black: int, asian: int, db: Session, fem
     if not daily_schedule:
         daily_schedule = {
             "wake_time": "08:00",
-            "daily_tasks": ["일상 활동", "여가 시간"],
+            "daily_tasks": ["?쇱긽 ?쒕룞", "?ш? ?쒓컙"],
             "sleep_time": "23:00"
         }
     
@@ -2135,7 +2184,7 @@ async def create_single_eve(white: int, black: int, asian: int, db: Session, fem
     for u in all_users:
         initial_registry.append({
             "user_id": u.id, "display_name": u.display_name or u.username,
-            "relationship": "낯선 사람", "last_talked": None, "memo": ""
+            "relationship": "??꽑 ?щ엺", "last_talked": None, "memo": ""
         })
         
     p = Persona(owner_id=None, name=name, age=age, gender=gender, mbti=mbti,
@@ -2184,7 +2233,7 @@ async def batch_create_task(job_id: str, count: int, white: int, black: int, asi
     attempts = 0
     max_attempts = count * 2
     try:
-        batch_status[job_id]['logs'].append("배치 생성 시작")
+        batch_status[job_id]['logs'].append("諛곗튂 ?앹꽦 ?쒖옉")
         while created < count and attempts < max_attempts:
             batch = min(BATCH_SIZE, count - created)
             tasks = [
@@ -2200,13 +2249,13 @@ async def batch_create_task(job_id: str, count: int, white: int, black: int, asi
                     print(f"Batch Create Warning: {r}")
                     batch_status[job_id]['failed'] += 1
                     err_name = type(r).__name__
-                    batch_status[job_id]['logs'].append(f"생성 실패({err_name}): {str(r)[:120]}")
+                    batch_status[job_id]['logs'].append(f"?앹꽦 ?ㅽ뙣({err_name}): {str(r)[:120]}")
                 else:
                     created += 1
                     batch_status[job_id]['created'] = created
                     name = r.get("name", "unknown") if isinstance(r, dict) else "unknown"
                     mbti = r.get("mbti", "????") if isinstance(r, dict) else "????"
-                    batch_status[job_id]['logs'].append(f"생성 성공: {name} ({mbti})")
+                    batch_status[job_id]['logs'].append(f"?앹꽦 ?깃났: {name} ({mbti})")
 
             if len(batch_status[job_id]['logs']) > 100:
                 batch_status[job_id]['logs'] = batch_status[job_id]['logs'][-100:]
@@ -2214,9 +2263,9 @@ async def batch_create_task(job_id: str, count: int, white: int, black: int, asi
             await asyncio.sleep(1)
 
         if attempts >= max_attempts and created < count:
-            batch_status[job_id]['logs'].append("최대 시도 횟수에 도달했습니다.")
+            batch_status[job_id]['logs'].append("理쒕? ?쒕룄 ?잛닔???꾨떖?덉뒿?덈떎.")
     except Exception as e:
-        batch_status[job_id]['logs'].append(f"배치 작업 오류: {str(e)}")
+        batch_status[job_id]['logs'].append(f"諛곗튂 ?묒뾽 ?ㅻ쪟: {str(e)}")
     finally:
         batch_status[job_id]['done'] = True
 
@@ -2292,11 +2341,11 @@ def _clamp_int(value: Any, default: int, minimum: int, maximum: int) -> int:
 
 def _normalize_gender(value: Any) -> str:
     raw = str(value or "").strip().lower()
-    if raw in ["male", "man", "m", "남", "남성"]:
-        return "남성"
-    if raw in ["female", "woman", "f", "여", "여성"]:
-        return "여성"
-    return random.choice(["남성", "여성"])
+    if raw in ["male", "man", "m", "??, "?⑥꽦"]:
+        return "?⑥꽦"
+    if raw in ["female", "woman", "f", "??, "?ъ꽦"]:
+        return "?ъ꽦"
+    return random.choice(["?⑥꽦", "?ъ꽦"])
 
 
 def _normalize_mbti(value: Any) -> str:
@@ -2548,7 +2597,7 @@ async def _autofill_custom_eve_payload(raw_data: dict) -> dict:
     if not daily_schedule:
         daily_schedule = {
             "wake_time": "08:00",
-            "daily_tasks": ["일상 활동", "자기계발 시간"],
+            "daily_tasks": ["?쇱긽 ?쒕룞", "?먭린怨꾨컻 ?쒓컙"],
             "sleep_time": "23:00"
         }
 
@@ -2647,7 +2696,7 @@ async def admin_custom_eve_create(data: dict = Body(...), current_user: User = D
             print(f"Custom Eve image generation failed: {e}")
 
     if payload.get("generate_image") and (not profile_image_url) and (not payload.get("profile_image_url")):
-        detail = "프로필 이미지 생성 실패"
+        detail = "?꾨줈???대?吏 ?앹꽦 ?ㅽ뙣"
         if image_error:
             detail = f"{detail}: {image_error}"
         raise HTTPException(status_code=502, detail=detail)
@@ -2658,7 +2707,7 @@ async def admin_custom_eve_create(data: dict = Body(...), current_user: User = D
         initial_registry.append({
             "user_id": u.id,
             "display_name": u.display_name or u.username,
-            "relationship": "낯선 사람",
+            "relationship": "??꽑 ?щ엺",
             "last_talked": None,
             "memo": ""
         })
@@ -2717,25 +2766,25 @@ async def admin_custom_eve_create(data: dict = Body(...), current_user: User = D
     }
 
 # ---------------------------------------------------------
-# 3. 생애 주기 시뮬레이션 엔진 (v1.3.0)
+# 3. ?앹븷 二쇨린 ?쒕??덉씠???붿쭊 (v1.3.0)
 # ---------------------------------------------------------
 
 
 def generate_random_nickname():
-    """수식어 + 명사 + 숫자 조합의 닉네임을 생성합니다."""
+    """?섏떇??+ 紐낆궗 + ?レ옄 議고빀???됰꽕?꾩쓣 ?앹꽦?⑸땲??"""
     adjectives = [
-        "졸린", "배고픈", "빛나는", "푸른", "비오는", "새벽의", "차분한", "엉뚱한", "용감한", "수줍은",
-        "우울한", "신난", "게으른", "똑똑한", "따뜻한", "차가운", "부드러운", "날카로운", "몽환적인", "단단한",
-        "조용한", "화려한", "소박한", "단순한", "복잡한", "빠른", "느릿한", "당당한", "섬세한", "거친",
-        "달콤한", "상큼한", "고소한", "쌉싸름한", "포근한", "투명한", "신비로운", "친절한", "도도한", "유연한",
-        "단호한", "나른한", "명랑한", "고요한", "치열한", "평온한", "고독한", "포근한", "향기로운", "창백한"
+        "議몃┛", "諛곌퀬??, "鍮쏅굹??, "?몃Ⅸ", "鍮꾩삤??, "?덈꼍??, "李⑤텇??, "?됰슧??, "?⑷컧??, "?섏쨳?",
+        "?곗슱??, "?좊궃", "寃뚯쑝瑜?, "?묐삊??, "?곕쑜??, "李④???, "遺?쒕윭??, "?좎뭅濡쒖슫", "紐쏀솚?곸씤", "?⑤떒??,
+        "議곗슜??, "?붾젮??, "?뚮컯??, "?⑥닚??, "蹂듭옟??, "鍮좊Ⅸ", "?먮┸??, "?밸떦??, "?ъ꽭??, "嫄곗튇",
+        "?ъ숴??, "?곹겮??, "怨좎냼??, "?됱떥由꾪븳", "?ш렐??, "?щ챸??, "?좊퉬濡쒖슫", "移쒖젅??, "?꾨룄??, "?좎뿰??,
+        "?⑦샇??, "?섎Ⅸ??, "紐낅옉??, "怨좎슂??, "移섏뿴??, "?됱삩??, "怨좊룆??, "?ш렐??, "?κ린濡쒖슫", "李쎈갚??
     ]
     nouns = [
-        "고양이", "머그컵", "구름", "별", "샌드위치", "포털", "여행자", "꿈", "바다", "나무", "안경",
-        "시계", "노트북", "강아지", "여우", "토끼", "사과", "바람", "노을", "새벽", "도시", "숲", "섬",
-        "산책자", "그림자", "거울", "열쇠", "문", "창문", "커피", "라떼", "쿠키", "초콜릿", "자전거",
-        "기차", "비행기", "우주", "달빛", "햇살", "빗방울", "파도", "모래", "조개", "낙엽", "눈송이",
-        "촛불", "등불", "서랍", "책", "연필"
+        "怨좎뼇??, "癒멸렇而?, "援щ쫫", "蹂?, "?뚮뱶?꾩튂", "?ы꽭", "?ы뻾??, "轅?, "諛붾떎", "?섎Т", "?덇꼍",
+        "?쒓퀎", "?명듃遺?, "媛뺤븘吏", "?ъ슦", "?좊겮", "?ш낵", "諛붾엺", "?몄쓣", "?덈꼍", "?꾩떆", "??, "??,
+        "?곗콉??, "洹몃┝??, "嫄곗슱", "?댁뇿", "臾?, "李쎈Ц", "而ㅽ뵾", "?쇰뼹", "荑좏궎", "珥덉퐳由?, "?먯쟾嫄?,
+        "湲곗감", "鍮꾪뻾湲?, "?곗＜", "?щ튆", "?뉗궡", "鍮쀫갑??, "?뚮룄", "紐⑤옒", "議곌컻", "?숈뿽", "?덉넚??,
+        "珥쏅텋", "?깅텋", "?쒕엻", "梨?, "?고븘"
     ]
     adj = random.choice(adjectives)
     noun = random.choice(nouns)
@@ -2744,8 +2793,8 @@ def generate_random_nickname():
 
 
 async def generate_eve_life_details(p_dict):
-    """제미나이를 이용해 이브의 최소 프로필(hook)과 하루 일과를 생성합니다."""
-    # [v1.4.2 복구] 당신의 정교한 프롬프트 전문 복구
+    """?쒕??섏씠瑜??댁슜???대툕??理쒖냼 ?꾨줈??hook)怨??섎（ ?쇨낵瑜??앹꽦?⑸땲??"""
+    # [v1.4.2 蹂듦뎄] ?뱀떊???뺢탳???꾨＼?꾪듃 ?꾨Ц 蹂듦뎄
     date_info = get_date_info()
     existing_profile = p_dict.get("profile_details", {}) if isinstance(p_dict.get("profile_details"), dict) else {}
     existing_schedule = p_dict.get("daily_schedule", {}) if isinstance(p_dict.get("daily_schedule"), dict) else {}
@@ -2754,39 +2803,39 @@ async def generate_eve_life_details(p_dict):
     existing_schedule_str = json.dumps(existing_schedule, ensure_ascii=False)
     traits_bundle = build_persona_traits(p_dict)
     prompt = f"""
-    당신은 틴더에서 짝을 만나기 위해 프로필을 작성 중입니다.
-    오늘 날짜: {date_info['full_str']}
+    ?뱀떊? ?대뜑?먯꽌 吏앹쓣 留뚮굹湲??꾪빐 ?꾨줈?꾩쓣 ?묒꽦 以묒엯?덈떎.
+    ?ㅻ뒛 ?좎쭨: {date_info['full_str']}
 
-    다음 기본 데이터를 바탕으로 [프로필 hook]과 [하루 일과]를 작성하세요.
+    ?ㅼ쓬 湲곕낯 ?곗씠?곕? 諛뷀깢?쇰줈 [?꾨줈??hook]怨?[?섎（ ?쇨낵]瑜??묒꽦?섏꽭??
 
-    [이브 특성 패키지]
+    [?대툕 ?뱀꽦 ?⑦궎吏]
     {json.dumps(traits_bundle, ensure_ascii=False)}
 
-    [입력 제약 - 반드시 준수]
-    - 사용자가 이미 입력한 profile_details 일부값: {existing_profile_str}
-    - 사용자가 이미 입력한 daily_schedule 일부값: {existing_schedule_str}
-    - 사용자가 입력한 값(비어있지 않은 값)은 절대 덮어쓰지 말 것.
-    - 빈 항목만 채울 것.
-    - 사용자가 일부만 입력한 리스트(예: daily_tasks)는 기존 항목을 유지하고 부족분만 채울 것.
+    [?낅젰 ?쒖빟 - 諛섎뱶??以??
+    - ?ъ슜?먭? ?대? ?낅젰??profile_details ?쇰?媛? {existing_profile_str}
+    - ?ъ슜?먭? ?대? ?낅젰??daily_schedule ?쇰?媛? {existing_schedule_str}
+    - ?ъ슜?먭? ?낅젰??媛?鍮꾩뼱?덉? ?딆? 媛?? ?덈? ??뼱?곗? 留?寃?
+    - 鍮???ぉ留?梨꾩슱 寃?
+    - ?ъ슜?먭? ?쇰?留??낅젰??由ъ뒪???? daily_tasks)??湲곗〈 ??ぉ???좎??섍퀬 遺議깅텇留?梨꾩슱 寃?
 
-    [임무 1: 프로필 hook]
-    - 틴더에서 이성을 유혹하거나 개성을 표현하기 위한 한 줄 소개 문구
-    - 길이는 1문장, 14~28자.
+    [?꾨Т 1: ?꾨줈??hook]
+    - ?대뜑?먯꽌 ?댁꽦???좏샊?섍굅??媛쒖꽦???쒗쁽?섍린 ?꾪븳 ??以??뚭컻 臾멸뎄
+    - 湲몄씠??1臾몄옣, 14~28??
 
-    [임무 2: 하루 일과]
-    - 오늘({date_info['full_str']})의 일과를 요일과 공휴일 여부를 반영하여 작성하세요.
-    - 기상 시간 (wake_time): HH:MM 형식의 시간
-    - 오늘 할 일 (daily_tasks): 1~3개의 주요 활동 (반드시 'HH:MM 활동내용' 형식으로 시간을 포함할 것)
-    - 취침 시간 (sleep_time): HH:MM 형식의 시간
+    [?꾨Т 2: ?섎（ ?쇨낵]
+    - ?ㅻ뒛({date_info['full_str']})???쇨낵瑜??붿씪怨?怨듯쑕???щ?瑜?諛섏쁺?섏뿬 ?묒꽦?섏꽭??
+    - 湲곗긽 ?쒓컙 (wake_time): HH:MM ?뺤떇???쒓컙
+    - ?ㅻ뒛 ????(daily_tasks): 1~3媛쒖쓽 二쇱슂 ?쒕룞 (諛섎뱶??'HH:MM ?쒕룞?댁슜' ?뺤떇?쇰줈 ?쒓컙???ы븿??寃?
+    - 痍⑥묠 ?쒓컙 (sleep_time): HH:MM ?뺤떇???쒓컙
 
-    JSON 응답 형식:
+    JSON ?묐떟 ?뺤떇:
     {{
         "profile_details": {{
-            "hook": "문구"
+            "hook": "臾멸뎄"
         }},
         "daily_schedule": {{
             "wake_time": "HH:MM",
-            "daily_tasks": ["HH:MM 첫 번째 일과", "HH:MM 두 번째 일과", "HH:MM 세 번째 일과"],
+            "daily_tasks": ["HH:MM 泥?踰덉㎏ ?쇨낵", "HH:MM ??踰덉㎏ ?쇨낵", "HH:MM ??踰덉㎏ ?쇨낵"],
             "sleep_time": "HH:MM"
         }}
     }}
@@ -2806,7 +2855,7 @@ async def generate_eve_life_details(p_dict):
 
 
 # ---------------------------------------------------------
-# [v1.9.3] sync_eve_life 함수는 engine.py로 이동되었습니다.
+# [v1.9.3] sync_eve_life ?⑥닔??engine.py濡??대룞?섏뿀?듬땲??
 # ---------------------------------------------------------
 
 
@@ -2860,11 +2909,10 @@ async def websocket_endpoint(websocket: WebSocket, room_id: int):
     v_state['p_dict'] = p_dict
     v_state.setdefault('medium_inflight', False)
     
-    # [v3.0.0] 통합 기억 시스템: 현재 유저 ID와 페르소나 객체 참조 저장
-    v_state['current_user_id'] = current_user_obj.id
+    # [v3.0.0] ?듯빀 湲곗뼲 ?쒖뒪?? ?꾩옱 ?좎? ID? ?섎Ⅴ?뚮굹 媛앹껜 李몄“ ???    v_state['current_user_id'] = current_user_obj.id
     v_state['persona_id'] = p.id
     
-    # [v3.0.0] user_registry의 last_talked 갱신
+    # [v3.0.0] user_registry??last_talked 媛깆떊
     registry = list(p.user_registry or [])
     user_found = False
     for entry in registry:
@@ -2878,29 +2926,28 @@ async def websocket_endpoint(websocket: WebSocket, room_id: int):
         registry.append({
             "user_id": current_user_obj.id,
             "display_name": current_user_obj.display_name or current_user_obj.username,
-            "relationship": room.relationship_category or "낯선 사람",
+            "relationship": room.relationship_category or "??꽑 ?щ엺",
             "last_talked": datetime.now(KST).strftime('%Y-%m-%d %H:%M'),
             "memo": ""
         })
     p.user_registry = registry
     db.commit()
     
-    # [v1.5.0] 사용자 프로필을 팩트 창고에 저장
-    if current_user_obj.display_name:
-        user_profile_fact = f"[사용자 프로필] 이름: {current_user_obj.display_name}"
+    # [v1.5.0] ?ъ슜???꾨줈?꾩쓣 ?⑺듃 李쎄퀬?????    if current_user_obj.display_name:
+        user_profile_fact = f"[?ъ슜???꾨줈?? ?대쫫: {current_user_obj.display_name}"
         if current_user_obj.age:
-            user_profile_fact += f", 나이: {current_user_obj.age}세"
+            user_profile_fact += f", ?섏씠: {current_user_obj.age}??
         if current_user_obj.gender:
-            gender_map = {'male': '남성', 'female': '여성', 'other': '기타'}
-            user_profile_fact += f", 성별: {gender_map.get(current_user_obj.gender, current_user_obj.gender)}"
+            gender_map = {'male': '?⑥꽦', 'female': '?ъ꽦', 'other': '湲고?'}
+            user_profile_fact += f", ?깅퀎: {gender_map.get(current_user_obj.gender, current_user_obj.gender)}"
         if current_user_obj.mbti:
             user_profile_fact += f", MBTI: {current_user_obj.mbti}"
         
         if user_profile_fact not in v_state['fact_warehouse']:
             v_state['fact_warehouse'].append(user_profile_fact)
     
-    # [v1.5.0] DB에서 관계 카테고리 로드
-    v_state['relationship_category'] = room.relationship_category or '낯선 사람'
+    # [v1.5.0] DB?먯꽌 愿怨?移댄뀒怨좊━ 濡쒕뱶
+    v_state['relationship_category'] = room.relationship_category or '??꽑 ?щ엺'
 
     async with v_state['lock']:
         v_state['websocket'] = websocket
@@ -2943,7 +2990,7 @@ async def websocket_endpoint(websocket: WebSocket, room_id: int):
                 persona=db_persona
             )
             db_room.fact_warehouse = v_state['fact_warehouse']
-            db_room.relationship_category = v_state.get('relationship_category', '낯선 사람')
+            db_room.relationship_category = v_state.get('relationship_category', '??꽑 ?щ엺')
 
             shared_raw = v_state.get('_last_shared_facts', [])
             private_raw = v_state.get('_last_private_facts', [])
@@ -2986,7 +3033,7 @@ async def websocket_endpoint(websocket: WebSocket, room_id: int):
                     if not isinstance(entry, dict):
                         continue
                     if entry.get('user_id') == v_state.get('current_user_id'):
-                        entry['relationship'] = v_state.get('relationship_category', '낯선 사람')
+                        entry['relationship'] = v_state.get('relationship_category', '??꽑 ?щ엺')
                         break
                 db_persona.user_registry = registry
 
@@ -3032,8 +3079,7 @@ async def websocket_endpoint(websocket: WebSocket, room_id: int):
                         v_state['status'] = "online"
                         v_state['is_ticking'] = True
                         v_state['activation_pending'] = False
-                        # [v3.5.0] DIA: 콜드스타트 - 모든 카테고리를 TTL=5로 활성화
-                        v_state['active_info_slots'] = {
+                        # [v3.5.0] DIA: 肄쒕뱶?ㅽ???- 紐⑤뱺 移댄뀒怨좊━瑜?TTL=5濡??쒖꽦??                        v_state['active_info_slots'] = {
                             cat: {"ttl": 5, "reason": "cold_start"}
                             for cat in DIA_CATEGORIES
                         }
@@ -3051,14 +3097,6 @@ async def websocket_endpoint(websocket: WebSocket, room_id: int):
                             "ts":
                             datetime.now(KST).strftime("%H:%M:%S")
                         })
-                        topic = _summarize_topic_text(merged)
-                        if topic:
-                            user_label = current_user_obj.display_name or current_user_obj.username or "User"
-                            eve_label = p_dict.get("name") or "EVE"
-                            push_ticker_event(
-                                f"{user_label} <-> {eve_label} chat: {topic}",
-                                kind="chat",
-                            )
                         v_state['input_pocket'].clear()
 
                         db = SessionLocal()
@@ -3097,7 +3135,7 @@ async def websocket_endpoint(websocket: WebSocket, room_id: int):
                     if not v_state['is_ticking']:
                         continue
 
-                    # [v3.5.0] DIA: 매 틱 TTL 자동 감소
+                    # [v3.5.0] DIA: 留???TTL ?먮룞 媛먯냼
                     tick_info_slots(v_state)
 
                     current_tick = v_state['tick_counter']
@@ -3145,7 +3183,7 @@ async def websocket_endpoint(websocket: WebSocket, room_id: int):
                         asyncio.create_task(run_medium_thinking_background())
 
                 if False and current_tick == 19:
-                    # [v3.0.0] 통합 기억용 persona 객체 로드
+                    # [v3.0.0] ?듯빀 湲곗뼲??persona 媛앹껜 濡쒕뱶
                     db_persona = db_room.persona
                     
                     res_text, tokens = await run_medium_thinking(
@@ -3157,10 +3195,9 @@ async def websocket_endpoint(websocket: WebSocket, room_id: int):
                     )
                     tokens_used = tokens
                     db_room.fact_warehouse = v_state['fact_warehouse']
-                    # [v1.5.0] 관계 카테고리 DB 동기화
-                    db_room.relationship_category = v_state.get('relationship_category', '낯선 사람')
+                    # [v1.5.0] 愿怨?移댄뀒怨좊━ DB ?숆린??                    db_room.relationship_category = v_state.get('relationship_category', '??꽑 ?щ엺')
                     
-                    # [v3.0.0] 통합 기억 업데이트 (shared_facts + private_facts)
+                    # [v3.0.0] ?듯빀 湲곗뼲 ?낅뜲?댄듃 (shared_facts + private_facts)
                     shared_raw = v_state.get('_last_shared_facts', [])
                     private_raw = v_state.get('_last_private_facts', [])
                     shared_facts = shared_raw if isinstance(shared_raw, list) else ([shared_raw] if shared_raw is not None else [])
@@ -3182,7 +3219,7 @@ async def websocket_endpoint(websocket: WebSocket, room_id: int):
                         except Exception as mem_err:
                             print(f"update_shared_memory error(room={room_id}): {mem_err}")
                     
-                    # [v3.1.0] 대화 요약 저장 (category: conversation)
+                    # [v3.1.0] ????붿빟 ???(category: conversation)
                     conv_summary = v_state.get('_last_conversation_summary')
                     if conv_summary and db_persona:
                         summary_text = conv_summary.get('summary', '') if isinstance(conv_summary, dict) else str(conv_summary)
@@ -3197,14 +3234,13 @@ async def websocket_endpoint(websocket: WebSocket, room_id: int):
                             except Exception as conv_mem_err:
                                 print(f"conversation_summary memory error(room={room_id}): {conv_mem_err}")
                     
-                    # [v3.0.0] user_registry 관계 동기화
-                    if db_persona:
+                    # [v3.0.0] user_registry 愿怨??숆린??                    if db_persona:
                         registry = list(db_persona.user_registry or [])
                         for entry in registry:
                             if not isinstance(entry, dict):
                                 continue
                             if entry.get('user_id') == v_state.get('current_user_id'):
-                                entry['relationship'] = v_state.get('relationship_category', '낯선 사람')
+                                entry['relationship'] = v_state.get('relationship_category', '??꽑 ?щ엺')
                                 break
                         db_persona.user_registry = registry
                     
@@ -3217,8 +3253,7 @@ async def websocket_endpoint(websocket: WebSocket, room_id: int):
                     )
                     tokens_used = tokens
                     
-                    # 상태 파라미터를 데이터베이스에 동기화
-                    if db_room and db:
+                    # ?곹깭 ?뚮씪誘명꽣瑜??곗씠?곕쿋?댁뒪???숆린??                    if db_room and db:
                         db_room.v_likeability = v_state['v_likeability']
                         db_room.v_erotic = v_state['v_erotic']
                         db_room.v_v_mood = v_state['v_v_mood']
@@ -3232,14 +3267,13 @@ async def websocket_endpoint(websocket: WebSocket, room_id: int):
                             except Exception:
                                 pass
                     
-                    # AI가 오프라인 전환을 원하는 경우 처리
+                    # AI媛 ?ㅽ봽?쇱씤 ?꾪솚???먰븯??寃쎌슦 泥섎━
                     if v_state.get('ai_wants_offline', False):
                         async with v_state['lock']:
                             v_state['status'] = 'offline'
                             v_state['is_ticking'] = False
                             v_state['tick_counter'] = 0
-                            v_state['ai_wants_offline'] = False  # 플래그 초기화
-                        if websocket.client_state == WebSocketState.CONNECTED:
+                            v_state['ai_wants_offline'] = False  # ?뚮옒洹?珥덇린??                        if websocket.client_state == WebSocketState.CONNECTED:
                             await websocket.send_json({"status": "offline"})
                 else:
                     if consecutive_speaks >= 2:
@@ -3254,7 +3288,7 @@ async def websocket_endpoint(websocket: WebSocket, room_id: int):
                             datetime.now(KST) -
                             v_state['last_user_ts']).total_seconds()
                         if time_since_user < 20 or current_tick % 3 == 0:
-                            # [v3.0.0] 통합 기억용 persona 로드
+                            # [v3.0.0] ?듯빀 湲곗뼲??persona 濡쒕뱶
                             db_persona_utt = db_room.persona if db_room else None
                             inference_res, tokens = await run_utterance(
                                 v_state, p_dict, room_id,
@@ -3371,8 +3405,7 @@ async def websocket_endpoint(websocket: WebSocket, room_id: int):
 
 
 # ---------------------------------------------------------
-# 5. API 리소스
-# ---------------------------------------------------------
+# 5. API 由ъ냼??# ---------------------------------------------------------
 
 
 @app.post("/add-friend")
@@ -3419,7 +3452,7 @@ def get_friends(current_user: User = Depends(get_current_user),
     return data
 
 
-# [v3.2.0] 이브 프로필 통계 API
+# [v3.2.0] ?대툕 ?꾨줈???듦퀎 API
 @app.get("/persona/{persona_id}/stats")
 def get_persona_stats(persona_id: int,
                       current_user: User = Depends(get_current_user),
@@ -3430,11 +3463,9 @@ def get_persona_stats(persona_id: int,
     if not persona:
         raise HTTPException(status_code=404)
 
-    # 총 친구 수 = 이 이브와 연결된 ChatRoom 수
-    total_friends = db.query(ChatRoom).filter(ChatRoom.persona_id == persona_id).count()
+    # 珥?移쒓뎄 ??= ???대툕? ?곌껐??ChatRoom ??    total_friends = db.query(ChatRoom).filter(ChatRoom.persona_id == persona_id).count()
 
-    # 최근 1시간 대화 수 = user_registry에서 last_talked가 1시간 이내인 수
-    active_chats_1h = 0
+    # 理쒓렐 1?쒓컙 ?????= user_registry?먯꽌 last_talked媛 1?쒓컙 ?대궡????    active_chats_1h = 0
     now = datetime.now(KST)
     one_hour_ago = now - timedelta(hours=1)
     registry = list(persona.user_registry or [])
@@ -3498,9 +3529,9 @@ def delete_friend(room_id: int,
     room = db.query(ChatRoom).filter(
         ChatRoom.id == room_id, ChatRoom.owner_id == current_user.id).first()
     if room:
-        # [v2.0.0] Shared Universe: 친구 삭제 시 채팅방만 삭제하고 이브 본체는 유지
-        # db.delete(room.persona) # <-- 기존: 이브 삭제 (X)
-        db.delete(room)           # <-- 변경: 내 목록에서만 삭제 (O)
+        # [v2.0.0] Shared Universe: 移쒓뎄 ??젣 ??梨꾪똿諛⑸쭔 ??젣?섍퀬 ?대툕 蹂몄껜???좎?
+        # db.delete(room.persona) # <-- 湲곗〈: ?대툕 ??젣 (X)
+        db.delete(room)           # <-- 蹂寃? ??紐⑸줉?먯꽌留???젣 (O)
         db.commit()
     return {"status": "deleted"}
 
@@ -3532,15 +3563,15 @@ def get_manifest():
 async def get_world_map(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     if not current_user: raise HTTPException(status_code=401)
     
-    # 1. 구역별 인구 밀도 계산 (전체 이브)
+    # 1. 援ъ뿭蹂??멸뎄 諛??怨꾩궛 (?꾩껜 ?대툕)
     # location_id -> count
     pop_counts = {}
     eves = db.query(Persona).all()
     
-    # 스케줄 기반 위치를 사용한다. 랜덤 더미 배정은 하지 않는다.
+    # ?ㅼ?以?湲곕컲 ?꾩튂瑜??ъ슜?쒕떎. ?쒕뜡 ?붾? 諛곗젙? ?섏? ?딅뒗??
     all_locs = db.query(MapLocation).all()
     if not all_locs:
-        # DB에 맵 데이터가 없으면 시딩 시도
+        # DB??留??곗씠?곌? ?놁쑝硫??쒕뵫 ?쒕룄
         seed_world_map(db)
         all_locs = db.query(MapLocation).all()
         if not all_locs:
@@ -3550,8 +3581,7 @@ async def get_world_map(current_user: User = Depends(get_current_user), db: Sess
     now_kst = datetime.now(KST)
     touched = False
 
-    # 이브가 한 명도 없을 때도 맵 구조는 반환해야 함
-    for eve in eves:
+    # ?대툕媛 ??紐낅룄 ?놁쓣 ?뚮룄 留?援ъ“??諛섑솚?댁빞 ??    for eve in eves:
         if not eve.current_location_id:
             planned_id = None
             if planned_location_id_for_datetime:
@@ -3576,10 +3606,9 @@ async def get_world_map(current_user: User = Depends(get_current_user), db: Sess
     if touched:
         db.commit()
 
-    # 2. 구역 데이터 구성
-    # District별로 그룹화
-    districts = {}
-    # 모든 Location을 순회하며 구조 생성 (이브 없어도 생성됨)
+    # 2. 援ъ뿭 ?곗씠??援ъ꽦
+    # District蹂꾨줈 洹몃９??    districts = {}
+    # 紐⑤뱺 Location???쒗쉶?섎ŉ 援ъ“ ?앹꽦 (?대툕 ?놁뼱???앹꽦??
     for loc in all_locs:
         d_name = loc.district
         if d_name not in districts:
@@ -3599,8 +3628,7 @@ async def get_world_map(current_user: User = Depends(get_current_user), db: Sess
             "description": loc.description
         })
 
-    # 3. 내 친구들 위치 (아바타 표시용) + 지역별 전체 이브 리스트
-    my_friends = []
+    # 3. ??移쒓뎄???꾩튂 (?꾨컮? ?쒖떆?? + 吏??퀎 ?꾩껜 ?대툕 由ъ뒪??    my_friends = []
     district_eves = []
     my_rooms = db.query(ChatRoom).filter(ChatRoom.owner_id == current_user.id).all()
     room_map = {r.persona_id: r.id for r in my_rooms}
@@ -3654,12 +3682,11 @@ async def get_world_map(current_user: User = Depends(get_current_user), db: Sess
 
 @app.get("/", response_class=HTMLResponse)
 async def get_ui():
-    # [v1.6.0] 매 요청마다 타임스탬프 생성하여 정적 자원 강제 리로드
-    import time
+    # [v1.6.0] 留??붿껌留덈떎 ??꾩뒪?ы봽 ?앹꽦?섏뿬 ?뺤쟻 ?먯썝 媛뺤젣 由щ줈??    import time
     timestamp = str(int(time.time()))
     with open("index.html", "r", encoding="utf-8") as f:
         content = f.read()
-        # script.js와 style.css에 타임스탬프 파라미터 주입
+        # script.js? style.css????꾩뒪?ы봽 ?뚮씪誘명꽣 二쇱엯
         content = content.replace('src="/static/script.js"', f'src="/static/script.js?v={timestamp}"')
         content = content.replace('href="/static/style.css"', f'href="/static/style.css?v={timestamp}"')
         return HTMLResponse(content)

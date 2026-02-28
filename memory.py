@@ -301,12 +301,13 @@ def get_shared_memory_context(persona, current_user_id):
         # 공개/비공개 필터링
         is_visible = False
         prefix = ""
-        
+
         if entry.get("is_public", True):
             is_visible = True
+            prefix = "[\uacf5\uac1c \uae30\uc5b5] "
         elif entry.get("source_user_id") == current_user_id:
             is_visible = True
-            prefix = "[비밀] "
+            prefix = "[\ube44\uacf5\uac1c \uae30\uc5b5] "
         
         if not is_visible:
             continue
