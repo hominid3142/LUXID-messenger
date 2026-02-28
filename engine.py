@@ -451,7 +451,7 @@ async def run_short_thinking(v_state, p_dict, room_id, custom_prompt=None, model
         "v_v_mood_change": 0,
         "v_relationship_change": 0,
         "go_offline": false,
-        "info_requests": [{"category": "FACTS", "ttl": 3}],
+        "info_requests": [{{"category": "FACTS", "ttl": 3}}],
         "info_dismissals": []
     }}
     """
@@ -1164,7 +1164,8 @@ async def generate_feed_activity(eves_batch: list[dict], current_feed: list[dict
         "related_users": e.get("related_users", []),
         "related_eves": e.get("related_eves", []),
         "recent_user_chats": e.get("recent_user_chats", []),
-        "recent_eve_chats": e.get("recent_eve_chats", [])
+        "recent_eve_chats": e.get("recent_eve_chats", []),
+        "my_last_feed": e.get("my_last_feed", {})
     } for e in eves_batch], ensure_ascii=False)
 
     feed_info = json.dumps([{

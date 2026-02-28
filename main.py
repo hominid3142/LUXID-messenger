@@ -30,7 +30,17 @@ load_dotenv()
 # 모듈화된 파일들에서 기능 임포트
 from database import engine, SessionLocal, Base
 from models import Persona, ChatRoom, User, PromptTemplate, SystemNotice, FeedPost, FeedComment, MapLocation, EveRelationship, UserPersonaRelationship
-from memory import KST, volatile_memory, get_volatile_state, get_date_info, update_shared_memory, tick_info_slots, DIA_CATEGORIES
+from memory import (
+    KST,
+    volatile_memory,
+    get_volatile_state,
+    get_date_info,
+    update_shared_memory,
+    tick_info_slots,
+    DIA_CATEGORIES,
+    push_ticker_event,
+    get_ticker_snapshot,
+)
 from engine import run_medium_thinking, run_short_thinking, run_utterance, generate_eve_visuals, generate_eve_nickname, client, MODEL_ID, debug_log_buffer, sync_eve_life, build_persona_traits
 from auth_utils import verify_password, get_password_hash, create_access_token, decode_access_token, update_user_tokens
 from scheduler import AEScheduler
@@ -152,6 +162,15 @@ def _to_kst(dt: Optional[datetime]) -> Optional[datetime]:
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
     return dt.astimezone(KST)
+
+
+def _summarize_topic_text(text: str, max_len: int = 36) -> str:
+    raw = " ".join(str(text or "").split())
+    if not raw:
+        return ""
+    if len(raw) <= max_len:
+        return raw
+    return raw[: max_len - 3].rstrip() + "..."
 
 # 보안 설정: JWT 토큰 추출을 위한 스킴
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login", auto_error=False)
@@ -888,6 +907,39 @@ async def get_feed(
     }
 
 
+@app.get("/api/ticker")
+async def get_live_ticker(db: Session = Depends(get_db)):
+    now_kst = datetime.now(KST)
+    kst_midnight = now_kst.replace(hour=0, minute=0, second=0, microsecond=0)
+    utc_midnight_naive = kst_midnight.astimezone(timezone.utc).replace(tzinfo=None)
+    today_feed_count = db.query(FeedPost).filter(
+        FeedPost.is_published == True,
+        FeedPost.created_at >= utc_midnight_naive,
+    ).count()
+
+    snapshot = get_ticker_snapshot(limit=24)
+    active_eves = int(snapshot.get("active_eve_count") or 0)
+    events = snapshot.get("events", []) if isinstance(snapshot.get("events"), list) else []
+
+    lines = [
+        f"Active eves now: {active_eves}",
+        f"Feed posts today: {today_feed_count}",
+    ]
+    for row in events:
+        if not isinstance(row, dict):
+            continue
+        text = str(row.get("text") or "").strip()
+        if text:
+            lines.append(text)
+
+    return {
+        "server_time_kst": now_kst.strftime("%Y-%m-%d %H:%M:%S"),
+        "active_eves": active_eves,
+        "today_feed_count": today_feed_count,
+        "items": lines[-30:],
+    }
+
+
 @app.post("/api/feed/post")
 async def create_user_feed_post(data: dict = Body(...), current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     if not current_user:
@@ -922,6 +974,9 @@ async def create_user_feed_post(data: dict = Body(...), current_user: User = Dep
     db.add(post)
     db.commit()
     db.refresh(post)
+    author_label = current_user.display_name or current_user.username or "User"
+    topic = _summarize_topic_text(content, max_len=30)
+    push_ticker_event(f"{author_label} posted: {topic}", kind="feed")
 
     return {"status": "success", "post_id": post.id}
 
@@ -2996,6 +3051,14 @@ async def websocket_endpoint(websocket: WebSocket, room_id: int):
                             "ts":
                             datetime.now(KST).strftime("%H:%M:%S")
                         })
+                        topic = _summarize_topic_text(merged)
+                        if topic:
+                            user_label = current_user_obj.display_name or current_user_obj.username or "User"
+                            eve_label = p_dict.get("name") or "EVE"
+                            push_ticker_event(
+                                f"{user_label} <-> {eve_label} chat: {topic}",
+                                kind="chat",
+                            )
                         v_state['input_pocket'].clear()
 
                         db = SessionLocal()

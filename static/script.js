@@ -16,6 +16,9 @@ const DEV_PASS = "31313142";
 let latestSeenFeedPostId = 0;
 let latestKnownFeedPostId = 0;
 const unseenFeedIds = new Set();
+let liveTickerTimer = null;
+const LIVE_TICKER_INTERVAL_MS = 4000;
+const LIVE_TICKER_VIEWS = new Set(["feed", "map", "list", "chats"]);
 
 // [v1.4.2 신규] 관리자 제어 대상 상태 관리
 let adminSelectedRoomId = null;
@@ -423,6 +426,55 @@ function _markFeedSeen() {
     updateBottomNavBadges();
 }
 
+function _parseChatTsToEpoch(ts) {
+    const raw = String(ts || "").trim();
+    if (!raw) return 0;
+
+    const direct = Date.parse(raw);
+    if (Number.isFinite(direct)) return direct;
+
+    const m = raw.match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?$/);
+    if (!m) return 0;
+    const now = new Date();
+    const d = new Date(now);
+    d.setHours(Number(m[1]), Number(m[2]), Number(m[3] || 0), 0);
+    if (d.getTime() > now.getTime() + 60 * 1000) {
+        d.setDate(d.getDate() - 1);
+    }
+    return d.getTime();
+}
+
+function _estimateLastHistoryEpoch(history) {
+    if (!Array.isArray(history) || history.length === 0) return 0;
+    const last = history[history.length - 1] || {};
+    const byTs = _parseChatTsToEpoch(last.ts);
+    if (byTs > 0) return byTs;
+    return Date.now();
+}
+
+function _reconcileFriendActivity(nextFriends) {
+    const prevByRoom = new Map((friendsData || []).map((f) => [Number(f.room_id), f]));
+    return (Array.isArray(nextFriends) ? nextFriends : []).map((f) => {
+        const roomId = Number(f.room_id);
+        const prev = prevByRoom.get(roomId) || {};
+        const histEpoch = _estimateLastHistoryEpoch(f.history);
+        const prevActivity = Number(prev._chatLastActivityAt) || 0;
+        const prevIncoming = Number(prev._chatLastIncomingAt) || 0;
+        f._chatLastActivityAt = Math.max(prevActivity, histEpoch);
+        f._chatLastIncomingAt = prevIncoming;
+        return f;
+    });
+}
+
+function _touchFriendActivity(roomId, incoming = false) {
+    const rid = Number(roomId);
+    const f = friendsData.find((item) => Number(item.room_id) === rid);
+    if (!f) return;
+    const now = Date.now();
+    f._chatLastActivityAt = now;
+    if (incoming) f._chatLastIncomingAt = now;
+}
+
 async function pollFeedBadge() {
     if (!accessToken || currentView === "feed") return;
     try {
@@ -437,6 +489,45 @@ async function pollFeedBadge() {
     }
 }
 
+function _renderLiveTickerText(items) {
+    const trackA = document.getElementById("live-ticker-track-a");
+    const trackB = document.getElementById("live-ticker-track-b");
+    if (!trackA || !trackB) return;
+
+    const safeItems = (Array.isArray(items) ? items : [])
+        .map((v) => String(v || "").replace(/\s+/g, " ").trim())
+        .filter(Boolean);
+    const text = safeItems.length > 0
+        ? `LIVE CHANNEL  |  ${safeItems.join("  |  ")}  |`
+        : "LIVE CHANNEL  |  Loading telemetry...  |";
+    trackA.textContent = text;
+    trackB.textContent = text;
+}
+
+function updateLiveTickerVisibility() {
+    const bar = document.getElementById("live-ticker-bar");
+    if (!bar) return;
+    bar.style.display = LIVE_TICKER_VIEWS.has(currentView) ? "block" : "none";
+}
+
+async function fetchLiveTicker() {
+    try {
+        const headers = {};
+        if (accessToken) headers.Authorization = `Bearer ${accessToken}`;
+        const res = await fetch("/api/ticker", { headers });
+        if (!res.ok) return;
+        const data = await res.json();
+        _renderLiveTickerText(data.items || []);
+    } catch (_) {
+    }
+}
+
+function startLiveTickerLoop() {
+    if (liveTickerTimer) return;
+    fetchLiveTicker();
+    liveTickerTimer = setInterval(fetchLiveTicker, LIVE_TICKER_INTERVAL_MS);
+}
+
 function switchMobileView(view) {
     // [Phase 5] 게스트 모드 뷰 접근 제한
     if (!accessToken && ['map', 'list', 'chats', 'settings'].includes(view)) {
@@ -445,6 +536,8 @@ function switchMobileView(view) {
     }
 
     currentView = view;
+    updateLiveTickerVisibility();
+    if (LIVE_TICKER_VIEWS.has(view)) fetchLiveTicker();
     document.body.classList.remove("is-chatting", "is-dev", "show-auth");
     const navs = document.querySelectorAll(".nav-item");
     navs.forEach((n) => n.classList.remove("active"));
@@ -1162,7 +1255,8 @@ async function loadFriends() {
             headers: { Authorization: `Bearer ${accessToken}` },
         });
         if (res.status === 401) return logout();
-        friendsData = await res.json();
+        const incomingFriends = await res.json();
+        friendsData = _reconcileFriendActivity(incomingFriends);
         const validRoomIds = new Set((friendsData || []).map((f) => Number(f.room_id)));
         Object.keys(unreadCounts || {}).forEach((k) => {
             const rid = Number(k);
@@ -1283,7 +1377,22 @@ function renderFriendList() {
 function renderChatList() {
     const list = document.getElementById("chat-list");
     if (!list) return;
-    const chattingFriends = friendsData.filter((f) => f.history && f.history.length > 0);
+    const chattingFriends = friendsData
+        .filter((f) => f.history && f.history.length > 0)
+        .map((f) => {
+            if (!(Number(f._chatLastActivityAt) > 0)) {
+                f._chatLastActivityAt = _estimateLastHistoryEpoch(f.history);
+            }
+            if (!(Number(f._chatLastIncomingAt) > 0)) {
+                f._chatLastIncomingAt = 0;
+            }
+            return f;
+        })
+        .sort((a, b) =>
+            (Number(b._chatLastIncomingAt) || 0) - (Number(a._chatLastIncomingAt) || 0) ||
+            (Number(b._chatLastActivityAt) || 0) - (Number(a._chatLastActivityAt) || 0) ||
+            Number(b.room_id || 0) - Number(a.room_id || 0)
+        );
 
     if (chattingFriends.length === 0) {
         list.innerHTML = `
@@ -1852,11 +1961,18 @@ function initSocket(roomId) {
 function handleIncomingData(roomId, data) {
     const f = friendsData.find((item) => item.room_id === roomId);
     if (!f) return;
+    let hasIncomingFromHistory = false;
+    let hasAnyNewFromHistory = false;
 
     // 1. 히스토리 증분 업데이트 (기존과 비교하여 새 메시지만 append)
     if (data.history) {
         const oldLen = f.history ? f.history.length : 0;
         const newLen = data.history.length;
+        hasAnyNewFromHistory = newLen > oldLen;
+        if (hasAnyNewFromHistory) {
+            const newMsgs = data.history.slice(oldLen);
+            hasIncomingFromHistory = newMsgs.some((m) => String(m?.role || "") !== "user");
+        }
         f.history = data.history;
 
         if (roomId === currentRoomId) {
@@ -1874,6 +1990,11 @@ function handleIncomingData(roomId, data) {
     }
 
     // 2. 상태 동기화
+    if (hasIncomingFromHistory || hasAnyNewFromHistory) {
+        _touchFriendActivity(roomId, hasIncomingFromHistory);
+        if (currentView === "chats") renderChatList();
+    }
+
     const msgStatus = data.status || (data.current_status && data.current_status.status);
     if (msgStatus) {
         f.status = msgStatus;
@@ -1907,6 +2028,7 @@ function handleIncomingData(roomId, data) {
 
     // 4. 발화 응답 처리 (WebSocket 직접 응답)
     if (data.responses) {
+        let hasNewIncoming = false;
         data.responses.forEach((r) => {
             const msgObj = { role: "assistant", content: r.text, ts: r.ts };
             if (!f.history) f.history = [];
@@ -1915,6 +2037,7 @@ function handleIncomingData(roomId, data) {
             const isDuplicate = f.history.some(h => h.content === r.text && h.ts === r.ts);
             if (!isDuplicate) {
                 f.history.push(msgObj);
+                hasNewIncoming = true;
                 if (roomId === currentRoomId && currentView === "chat") {
                     appendMsg("ai", r.text, r.ts);
                 } else {
@@ -1925,6 +2048,10 @@ function handleIncomingData(roomId, data) {
                 }
             }
         });
+        if (hasNewIncoming) {
+            _touchFriendActivity(roomId, true);
+            if (currentView === "chats") renderChatList();
+        }
     }
 
     // 5. 관리자 제어 패널 데이터 실시간 동기화
@@ -2048,6 +2175,8 @@ function send() {
             if (!f.history) f.history = [];
             f.history.push({ role: "user", content: text, ts: ts });
         }
+        _touchFriendActivity(currentRoomId, false);
+        if (currentView === "chats") renderChatList();
         globalSockets[currentRoomId].send(text);
         input.value = "";
     }
@@ -3688,6 +3817,7 @@ function handleFeedDMClick(authorId, roomId) {
 
 // 초기 실행 + 피드 2분 자동 갱신
 checkAuth();
+startLiveTickerLoop();
 setInterval(() => {
     if (currentView === "feed") {
         loadFeed(true);
