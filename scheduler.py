@@ -1524,26 +1524,32 @@ class AEScheduler:
             await asyncio.sleep(0.5)
 
     async def _run_feed_to_dm_bridge(self, active_eves: list, db: Session) -> int:
-        """Keep legacy feature: active eves may DM users after reading recent user-authored feeds."""
+        """At feed timing, each active EVE proactively DMs all connected non-admin users."""
         if not active_eves:
             return 0
         dm_sent = 0
-        recent_user_posts = db.query(FeedPost).filter(
-            FeedPost.is_published == True,
-            FeedPost.user_id != None
-        ).order_by(desc(FeedPost.id)).limit(30).all()
-        if not recent_user_posts:
+        users = {u.id: u for u in db.query(User).filter(User.is_admin == False).all()}
+        if not users:
             return 0
-        users = {u.id: u for u in db.query(User).all()}
         for persona in active_eves:
-            target_post = random.choice(recent_user_posts)
-            user = users.get(target_post.user_id)
-            if not user:
-                continue
-            sent = await engine.maybe_send_dm_from_user_feed(persona, user, target_post, db)
-            if sent:
-                dm_sent += 1
-            await asyncio.sleep(0.2)
+            rooms = db.query(ChatRoom).filter(ChatRoom.persona_id == persona.id).all()
+            sent_for_persona = 0
+            seen_user_ids = set()
+            for room in rooms:
+                uid = int(room.owner_id)
+                if uid in seen_user_ids:
+                    continue
+                seen_user_ids.add(uid)
+                user = users.get(uid)
+                if not user:
+                    continue
+                sent = await engine.send_feed_timing_dm_to_connected_user(persona, user, db)
+                if sent:
+                    dm_sent += 1
+                    sent_for_persona += 1
+                await asyncio.sleep(0.08)
+            if sent_for_persona:
+                print(f"   [FEED->DM] {persona.name} proactive DMs sent: {sent_for_persona}")
         return dm_sent
 
     async def hourly_feed_job(self):

@@ -2206,6 +2206,64 @@ body.dev-unlocked .nav-item#nav-dev {
   align-items: flex-start;
 }
 
+.msg-row.ai-group {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.ai-avatar {
+  width: 30px;
+  height: 30px;
+  min-width: 30px;
+  border-radius: 50%;
+  overflow: hidden;
+  background: #d1d1d6;
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.ai-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.ai-thread {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  max-width: 78%;
+}
+
+.ai-name {
+  font-size: 11px;
+  color: var(--text-sub);
+  margin-left: 2px;
+}
+
+.ai-bubbles {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.ai-bubble-item {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+}
+
+.ai-bubble-item .bubble.ai {
+  max-width: 100%;
+  align-self: auto;
+}
+
 .msg-row.system {
   align-items: center;
 }

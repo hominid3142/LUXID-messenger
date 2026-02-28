@@ -1155,10 +1155,13 @@ async function openAdminPersonaProfile(personaId) {
         const friendsContainer = document.getElementById("admin-detail-friends");
         if (details.friends && details.friends.length > 0) {
             friendsContainer.innerHTML = details.friends.map(fr => `
-                <div style="padding:6px 12px; background:${fr.type === 'EVE' ? '#e3f2fd' : '#f3e5f5'}; border-radius:16px; font-size:12px; font-weight:600; color:var(--text-main); display:inline-flex; align-items:center; gap:6px; border:1px solid ${fr.type === 'EVE' ? '#bbdefb' : '#e1bee7'};">
-                    <span style="font-size:14px;">${fr.type === 'EVE' ? '🤖' : '👤'}</span>
-                    <span>${fr.name}</span>
-                    <span style="background:rgba(0,0,0,0.1); padding:2px 6px; border-radius:8px; font-size:10px;">${fr.relationship} ${fr.interactions !== '-' ? `(${fr.interactions})` : ''}</span>
+                <div style="padding:8px 12px; background:${fr.type === 'EVE' ? '#e3f2fd' : '#f3e5f5'}; border-radius:12px; font-size:12px; color:var(--text-main); display:flex; flex-direction:column; gap:4px; border:1px solid ${fr.type === 'EVE' ? '#bbdefb' : '#e1bee7'};">
+                    <div style="display:inline-flex; align-items:center; gap:6px; font-weight:600;">
+                        <span style="font-size:14px;">${fr.type === 'EVE' ? '🤖' : '👤'}</span>
+                        <span>${fr.name}</span>
+                        <span style="background:rgba(0,0,0,0.1); padding:2px 6px; border-radius:8px; font-size:10px;">${fr.relationship} ${fr.interactions !== '-' ? `(${fr.interactions})` : ''}</span>
+                    </div>
+                    ${fr.type === 'USER' && fr.relationship_summary ? `<div style="font-size:11px; color:var(--text-sub); line-height:1.35;">${fr.relationship_summary}</div>` : ''}
                 </div>
             `).join("");
         } else {
@@ -2197,9 +2200,46 @@ function send() {
 function appendMsg(type, text, ts) {
     const area = document.getElementById("chat-area");
     if (!area) return;
+
+    if (type === "ai") {
+        const friend = friendsData.find((item) => item.room_id === currentRoomId) || {};
+        let group = area.lastElementChild;
+        const canReuseGroup =
+            group &&
+            group.classList &&
+            group.classList.contains("msg-row") &&
+            group.classList.contains("ai-group");
+
+        if (!canReuseGroup) {
+            group = document.createElement("div");
+            group.className = "msg-row ai-group";
+            const avatarHtml = friend.profile_image_url
+                ? `<img src="${friend.profile_image_url}" alt="${friend.name || "EVE"}">`
+                : `<span>${(friend.name || "EVE")[0] || "E"}</span>`;
+            group.innerHTML = `
+                <div class="ai-avatar">${avatarHtml}</div>
+                <div class="ai-thread">
+                    <div class="ai-name">${friend.name || "EVE"}</div>
+                    <div class="ai-bubbles"></div>
+                </div>
+            `;
+            area.appendChild(group);
+        }
+
+        const bubbleStack = group.querySelector(".ai-bubbles");
+        if (bubbleStack) {
+            const item = document.createElement("div");
+            item.className = "ai-bubble-item";
+            item.innerHTML = `<div class="bubble ai">${text}</div><div class="msg-meta">${ts || ""}</div>`;
+            bubbleStack.appendChild(item);
+        }
+        area.scrollTop = area.scrollHeight;
+        return;
+    }
+
     const row = document.createElement("div");
     row.className = `msg-row ${type}`;
-    row.innerHTML = `<div class="bubble ${type}">${text}</div><div class="msg-meta">${ts}</div>`;
+    row.innerHTML = `<div class="bubble ${type}">${text}</div><div class="msg-meta">${ts || ""}</div>`;
     area.appendChild(row);
     area.scrollTop = area.scrollHeight;
 }

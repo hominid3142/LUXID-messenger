@@ -603,6 +603,7 @@ async def run_utterance(v_state, p_dict, room_id, custom_prompt=None, model_id=N
     - 채팅체 수치가 높을 수록 초성체를 많이 쓴다.
     - [감정] 항목과 일치하는 반응만 출력한다.
     - 대화 흐름과 성격에 어울리게 짧은 메시지 위주로.
+    - [비공개 기억] 태그가 붙은 내용은 문장을 그대로 반복하거나 직접 인용하지 말고, 의미만 살려 우회적으로 표현한다.
 
     JSON 응답 형식 (필수):
     {{
@@ -1846,4 +1847,143 @@ async def maybe_send_dm_from_user_feed(persona, user, post, db) -> bool:
             print(f"WS Send Error in feed DM reaction: {e}")
 
     print(f"   [FEED->DM] {persona.name} -> {user.username} (post {post.id})")
+    return True
+
+
+async def send_feed_timing_dm_to_connected_user(persona, user, db) -> bool:
+    """
+    At hourly feed timing, send one proactive DM from an EVE to a connected user.
+    This targets existing connected rooms only.
+    """
+    from models import ChatRoom
+    from memory import get_volatile_state, KST
+    from sqlalchemy.orm.attributes import flag_modified
+
+    if not persona or not user:
+        return False
+
+    room = db.query(ChatRoom).filter(
+        ChatRoom.owner_id == user.id,
+        ChatRoom.persona_id == persona.id
+    ).first()
+    if not room:
+        return False
+
+    v_state = get_volatile_state(room.id, room)
+    history = list(v_state.get("ram_history") or room.history or [])
+    hour_tag = datetime.now(KST).strftime("%Y-%m-%d %H")
+
+    # Deduplicate by hour per room to avoid duplicate sends on retries/restarts.
+    if any(
+        isinstance(h, dict)
+        and h.get("msg_type") == "feed_timing_dm"
+        and h.get("timing_hour") == hour_tag
+        for h in history
+    ):
+        return False
+
+    recent_dialogue = []
+    for h in reversed(history):
+        if not isinstance(h, dict):
+            continue
+        role = str(h.get("role") or "").strip().lower()
+        if role not in ("user", "assistant"):
+            continue
+        text = str(h.get("content") or "").strip()
+        if not text:
+            continue
+        recent_dialogue.append({
+            "role": "user" if role == "user" else "eve",
+            "text": text[:220],
+            "ts": str(h.get("ts") or h.get("timestamp") or "")[:24],
+        })
+        if len(recent_dialogue) >= 8:
+            break
+    recent_dialogue.reverse()
+
+    persona_traits = build_persona_traits(persona)
+    user_profile = json.dumps(user.profile_details or {}, ensure_ascii=False)
+    rel = str(getattr(room, "relationship_category", "") or "").strip() or "unknown"
+    recent_dialogue_str = json.dumps(recent_dialogue, ensure_ascii=False)
+
+    prompt = f"""
+You are an EVE in a dating social app.
+This is your feed activity timing, and you are proactively messaging a connected user first.
+
+[EVE traits]
+{json.dumps(persona_traits, ensure_ascii=False)}
+
+[User]
+- name: {user.display_name or user.username}
+- relationship: {rel}
+- profile: {user_profile}
+
+[Recent DM context]
+{recent_dialogue_str}
+
+Task:
+- Write exactly one proactive DM message the EVE will send now.
+- Return JSON only:
+{{
+  "message": "..."
+}}
+"""
+
+    raw = ""
+    try:
+        response = await asyncio.to_thread(
+            client.models.generate_content,
+            model=MODEL_ID,
+            contents=prompt,
+        )
+        raw = (response.text or "").strip()
+    except Exception as e:
+        print(f"send_feed_timing_dm_to_connected_user generation Error: {e}")
+        return False
+
+    if raw.startswith("```json"):
+        raw = raw[7:]
+    if raw.startswith("```"):
+        raw = raw[3:]
+    if raw.endswith("```"):
+        raw = raw[:-3]
+    raw = raw.strip()
+
+    message = ""
+    try:
+        data = json.loads(raw)
+        if isinstance(data, dict):
+            message = str(data.get("message") or "").strip()
+    except Exception:
+        message = raw
+
+    if not message:
+        return False
+    if len(message) > 280:
+        message = message[:280].rstrip()
+
+    now_ts = datetime.now(KST).strftime('%I:%M %p')
+    event = {
+        "role": "assistant",
+        "content": message,
+        "ts": now_ts,
+        "msg_type": "feed_timing_dm",
+        "timing_hour": hour_tag,
+    }
+    v_state['ram_history'].append(event)
+    room.history = v_state['ram_history']
+    flag_modified(room, "history")
+    db.commit()
+
+    ws = v_state.get('websocket')
+    if ws:
+        try:
+            await ws.send_json({
+                "responses": [{"text": message, "ts": now_ts}],
+                "typing": False
+            })
+        except Exception as e:
+            print(f"WS Send Error in feed timing DM: {e}")
+
+    print(f"   [FEED->DM] {persona.name} -> {user.username} (feed timing)")
     return True
