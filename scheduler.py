@@ -11,7 +11,13 @@ from datetime import datetime, timedelta
 import random
 import engine
 import fal_client
-from memory import KST, volatile_memory, update_shared_memory
+from memory import (
+    KST,
+    volatile_memory,
+    update_shared_memory,
+    set_ticker_active_eve_count,
+    push_ticker_event,
+)
 try:
     from location_planner import compute_hourly_location_plan, planned_location_id_for_datetime
 except Exception:
@@ -40,7 +46,6 @@ class AEScheduler:
     def __init__(self):
         # KST(한국 시간) 기준으로 스케줄링
         self.scheduler = AsyncIOScheduler(timezone=KST)
-        self.use_hourly_planner = os.environ.get("USE_HOURLY_PLANNER", "true").lower() in ("1", "true", "yes", "on")
         self.hourly_post_min = int(os.environ.get("HOURLY_POST_MIN", "4"))
         self.hourly_post_max = int(os.environ.get("HOURLY_POST_MAX", "10"))
         self.hourly_comment_min = int(os.environ.get("HOURLY_COMMENT_MIN", "10"))
@@ -1140,6 +1145,19 @@ class AEScheduler:
             if len(related_eves) >= 10:
                 break
 
+        my_last_feed = {}
+        recent_self_post = db.query(FeedPost).filter(
+            FeedPost.persona_id == persona.id,
+            FeedPost.is_published == True
+        ).order_by(desc(FeedPost.created_at)).first()
+        if recent_self_post:
+            my_last_feed = {
+                "id": recent_self_post.id,
+                "content": str(recent_self_post.content or "")[:220],
+                "time": str(recent_self_post.created_at),
+                "has_image": bool(getattr(recent_self_post, "image_url", None)),
+            }
+
         return {
             "id": persona.id,
             "name": persona.name,
@@ -1151,6 +1169,7 @@ class AEScheduler:
             "related_eves": related_eves,
             "recent_user_chats": recent_user_chats,
             "recent_eve_chats": recent_eve_chats,
+            "my_last_feed": my_last_feed,
         }
 
     async def _plan_hourly_actions(self, db: Session, now: datetime) -> tuple[int, int, int]:
@@ -1162,7 +1181,7 @@ class AEScheduler:
 
         current_feed = db.query(FeedPost).filter(
             FeedPost.is_published == True
-        ).order_by(desc(FeedPost.created_at)).limit(80).all()
+        ).order_by(desc(FeedPost.created_at)).limit(12).all()
 
         planned = 0
         actions_to_save: list[ScheduledAction] = []
@@ -1491,19 +1510,26 @@ class AEScheduler:
             fact_b = result.get("new_fact_for_b")
             
             if summary:
-                # conversation_summaries 업데이트 (최신 20개 유지)
                 current_summaries = rel.conversation_summaries or []
                 current_summaries.append(summary)
                 rel.conversation_summaries = current_summaries[-20:]
-                
+                summary_text = " ".join(str(summary).split())
+                if len(summary_text) > 72:
+                    summary_text = summary_text[:69].rstrip() + "..."
+                if summary_text:
+                    push_ticker_event(
+                        f"{p_a.name} <-> {p_b.name} chat: {summary_text}",
+                        kind="eve_chat",
+                    )
+
             if fact_a:
                 update_shared_memory(db, rel.persona_a_id, [{"fact": fact_a, "is_public": True, "category": "fact"}], source_user_id=None)
             if fact_b:
                 update_shared_memory(db, rel.persona_b_id, [{"fact": fact_b, "is_public": True, "category": "fact"}], source_user_id=None)
-                
+
             rel.last_talked = datetime.now(KST)
             db.commit()
-            print(f"   [SOCIAL SIM] {p_a.name} & {p_b.name} 대화 시뮬레이션 완료")
+            print(f"   [SOCIAL SIM] {p_a.name} & {p_b.name} social simulation complete")
             await asyncio.sleep(0.5)
 
     async def _run_feed_to_dm_bridge(self, active_eves: list, db: Session) -> int:
@@ -1530,7 +1556,7 @@ class AEScheduler:
         return dm_sent
 
     async def hourly_feed_job(self):
-        """매시 정각: 활동 시간에 해당하는 이브들의 피드 활동을 생성"""
+        """Generate hourly feed/social actions for active Eves."""
         print(">> SCHEDULER: Starting Hourly Feed Generation...")
         db = SessionLocal()
         try:
@@ -1542,77 +1568,21 @@ class AEScheduler:
                 db.commit()
                 print(f">> MAP: hourly location sync moved={moved_count} at {current_hour}")
 
-            if self.use_hourly_planner:
-                post_budget, comment_budget, planned_count = await self._plan_hourly_actions(db, now)
-                active_for_social = self._pick_candidate_personas(db, now, limit=20)
-                if active_for_social:
-                    await self._run_social_simulations_for_batch(active_for_social, db)
-                dm_sent = await self._run_feed_to_dm_bridge(active_for_social, db)
-                print(
-                    f">> SCHEDULER: Hourly plan created at {current_hour} "
-                    f"(posts={post_budget}, comments={comment_budget}, queued={planned_count}, dm={dm_sent})"
-                )
-                return
+            post_budget, comment_budget, planned_count = await self._plan_hourly_actions(db, now)
+            active_for_social = self._pick_candidate_personas(db, now, limit=20)
+            set_ticker_active_eve_count(len(active_for_social))
+            push_ticker_event(
+                f"Hourly active eves selected: {len(active_for_social)}",
+                kind="active",
+            )
+            if active_for_social:
+                await self._run_social_simulations_for_batch(active_for_social, db)
+            dm_sent = await self._run_feed_to_dm_bridge(active_for_social, db)
+            print(
+                f">> SCHEDULER: Hourly plan created at {current_hour} "
+                f"(posts={post_budget}, comments={comment_budget}, queued={planned_count}, dm={dm_sent})"
+            )
 
-            # [Phase 4] feed_times에 현재 시간이 포함되거나, 15% 확률로 돌발 피드 생성 (활성도 증가)
-            active_eves = [p for p in all_personas if (p.feed_times and current_hour in p.feed_times) or (random.random() < 0.15)]
-            
-            if not active_eves:
-                print(f">> SCHEDULER: No active eves at {current_hour}")
-                return
-
-            print(f">> SCHEDULER: {len(active_eves)} eves are active at {current_hour}")
-
-            # 최근 발행된 피드 50개 조회
-            current_feed = db.query(FeedPost).filter(
-                FeedPost.is_published == True
-            ).order_by(desc(FeedPost.created_at)).limit(50).all()
-
-            # 10명씩 배치 처리 (청크 분할)
-            def chunker(seq, size):
-                return (seq[pos:pos + size] for pos in range(0, len(seq), size))
-
-            action_count = 0
-            for batch in chunker(active_eves, 10):
-                batch_dicts = [self._build_persona_feed_input(db, e) for e in batch]
-                activities = await engine.generate_feed_activity(batch_dicts, current_feed)
-                if current_feed and activities and not any((a or {}).get("action") == "comment" for a in activities):
-                    for act in activities:
-                        persona_id = (act or {}).get("persona_id")
-                        if not persona_id:
-                            continue
-                        candidates = [p for p in current_feed if getattr(p, "persona_id", None) and p.persona_id != persona_id]
-                        if not candidates:
-                            continue
-                        target = random.choice(candidates)
-                        act["action"] = "comment"
-                        act["target_post_id"] = target.id
-                        act["target_persona_id"] = target.persona_id
-                        act["tagged_persona_ids"] = []
-                        act["tag_activity"] = ""
-                        act["generate_image"] = False
-                        act["image_prompt"] = ""
-                        act["delay_minutes"] = 0
-                        break
-                
-                # [Phase 3] 피드 활동에 따른 창발적 관계 형성
-                engine.update_eve_relationships_from_feed(activities, db)
-                
-                for act in activities:
-                    action_count = await self._process_feed_activity(action_count, act, db, current_hour)
-                
-                # [Phase 3] 배치 이브들의 친구 관계 대화 시뮬레이션
-                await self._run_social_simulations_for_batch(batch, db)
-                
-                db.commit() # 청크마다 커밋
-                await asyncio.sleep(2) # 부하 방지
-
-            dm_sent = await self._run_feed_to_dm_bridge(active_eves, db)
-            if dm_sent > 0:
-                print(f">> SCHEDULER: Feed->DM proactive messages sent: {dm_sent}")
-
-            print(f">> SCHEDULER: Completed Hourly Feed. Generated {action_count} actions.")
-                
         except Exception as e:
             print(f"hourly_feed_job Error: {e}")
         finally:
@@ -1632,5 +1602,4 @@ class AEScheduler:
         self.scheduler.add_job(self._execute_planned_actions_job, CronTrigger(minute='*', timezone=KST))
         
         self.scheduler.start()
-        mode = "hourly-planner" if self.use_hourly_planner else "legacy-feed-times"
-        print(f">> SCHEDULER: Started (mode={mode}, relationship checkpoints at 12:00/00:00 KST)")
+        print(">> SCHEDULER: Started (mode=hourly-planner, relationship checkpoints at 12:00/00:00 KST)")

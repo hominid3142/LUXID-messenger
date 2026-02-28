@@ -783,6 +783,46 @@ body.is-profile #profile-page {
   z-index: 10;
 }
 
+.live-ticker-bar {
+  position: relative;
+  height: 24px;
+  overflow: hidden;
+  border-top: 1px solid rgba(0, 0, 0, 0.06);
+  border-bottom: 1px solid rgba(0, 0, 0, 0.08);
+  background: linear-gradient(90deg, #f8fafc 0%, #eef2ff 100%);
+}
+
+.live-ticker-track {
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  white-space: nowrap;
+  padding-left: 100%;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: #334155;
+  animation: liveTickerFlow 34s linear infinite;
+  will-change: transform;
+}
+
+.live-ticker-track-clone {
+  animation-delay: -17s;
+}
+
+@keyframes liveTickerFlow {
+  0% {
+    transform: translateX(0);
+  }
+
+  100% {
+    transform: translateX(-100%);
+  }
+}
+
 #tab-viewport {
   flex: 1;
   width: 100%;

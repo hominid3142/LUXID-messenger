@@ -1,11 +1,64 @@
 import asyncio
 import random
+import threading
+from collections import deque
 from datetime import datetime, timedelta, timezone
 
 KST = timezone(timedelta(hours=9))
 
 # [휘발성 메모리 관리소]
 volatile_memory = {}
+
+# Runtime ticker channel state (shared across scheduler/websocket/API).
+_ticker_lock = threading.Lock()
+_ticker_events = deque(maxlen=80)
+_ticker_active_eve_count = 0
+_ticker_active_updated_at = None
+
+
+def set_ticker_active_eve_count(count: int):
+    global _ticker_active_eve_count, _ticker_active_updated_at
+    try:
+        value = int(count)
+    except Exception:
+        value = 0
+    if value < 0:
+        value = 0
+    with _ticker_lock:
+        _ticker_active_eve_count = value
+        _ticker_active_updated_at = datetime.now(KST)
+
+
+def push_ticker_event(text: str, kind: str = "event"):
+    payload = str(text or "").strip()
+    if not payload:
+        return
+    if len(payload) > 180:
+        payload = payload[:177].rstrip() + "..."
+    row = {
+        "ts": datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S"),
+        "kind": str(kind or "event"),
+        "text": payload,
+    }
+    with _ticker_lock:
+        _ticker_events.append(row)
+
+
+def get_ticker_snapshot(limit: int = 24):
+    try:
+        n = int(limit)
+    except Exception:
+        n = 24
+    n = max(1, min(60, n))
+    with _ticker_lock:
+        events = list(_ticker_events)[-n:]
+        active_count = int(_ticker_active_eve_count)
+        updated_at = _ticker_active_updated_at
+    return {
+        "active_eve_count": active_count,
+        "active_updated_at": updated_at,
+        "events": events,
+    }
 
 
 def get_volatile_state(room_id, db_room=None):
