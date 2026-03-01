@@ -14,6 +14,7 @@ _ticker_lock = threading.Lock()
 _ticker_events = deque(maxlen=80)
 _ticker_active_eve_count = 0
 _ticker_active_updated_at = None
+_ticker_social_conversation_count = 0
 
 
 def set_ticker_active_eve_count(count: int):
@@ -27,6 +28,18 @@ def set_ticker_active_eve_count(count: int):
     with _ticker_lock:
         _ticker_active_eve_count = value
         _ticker_active_updated_at = datetime.now(KST)
+
+
+def set_ticker_social_conversation_count(count: int):
+    global _ticker_social_conversation_count
+    try:
+        value = int(count)
+    except Exception:
+        value = 0
+    if value < 0:
+        value = 0
+    with _ticker_lock:
+        _ticker_social_conversation_count = value
 
 
 def push_ticker_event(text: str, kind: str = "event"):
@@ -54,9 +67,11 @@ def get_ticker_snapshot(limit: int = 24):
         events = list(_ticker_events)[-n:]
         active_count = int(_ticker_active_eve_count)
         updated_at = _ticker_active_updated_at
+        social_conversation_count = int(_ticker_social_conversation_count)
     return {
         "active_eve_count": active_count,
         "active_updated_at": updated_at,
+        "social_conversation_count": social_conversation_count,
         "events": events,
     }
 
@@ -301,13 +316,13 @@ def get_shared_memory_context(persona, current_user_id):
         # 공개/비공개 필터링
         is_visible = False
         prefix = ""
-
+        
         if entry.get("is_public", True):
             is_visible = True
-            prefix = "[\uacf5\uac1c \uae30\uc5b5] "
+            prefix = "[공개 기억] "
         elif entry.get("source_user_id") == current_user_id:
             is_visible = True
-            prefix = "[\ube44\uacf5\uac1c \uae30\uc5b5] "
+            prefix = "[비공개 기억] "
         
         if not is_visible:
             continue

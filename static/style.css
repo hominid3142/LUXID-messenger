@@ -2206,45 +2206,49 @@ body.dev-unlocked .nav-item#nav-dev {
   align-items: flex-start;
 }
 
-.msg-row.ai-group {
+.ai-group {
   display: flex;
   align-items: flex-start;
   gap: 8px;
   margin-bottom: 4px;
+  max-width: 92%;
 }
 
 .ai-avatar {
   width: 30px;
-  height: 30px;
   min-width: 30px;
+  height: 30px;
   border-radius: 50%;
   overflow: hidden;
-  background: #d1d1d6;
-  color: #fff;
+  background: var(--gray-bubble);
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 12px;
-  font-weight: 700;
 }
 
-.ai-avatar img {
+.ai-avatar-img {
   width: 100%;
   height: 100%;
   object-fit: cover;
 }
 
-.ai-thread {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-  max-width: 78%;
+.ai-avatar-fallback {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-sub);
 }
 
-.ai-name {
+.ai-thread {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.ai-sender {
   font-size: 11px;
   color: var(--text-sub);
-  margin-left: 2px;
+  padding-left: 4px;
 }
 
 .ai-bubbles {
@@ -2253,15 +2257,18 @@ body.dev-unlocked .nav-item#nav-dev {
   gap: 4px;
 }
 
-.ai-bubble-item {
+.ai-bubble-wrap {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
 }
 
-.ai-bubble-item .bubble.ai {
+.ai-bubble-wrap .bubble.ai {
   max-width: 100%;
-  align-self: auto;
+}
+
+.ai-bubble-wrap .msg-meta {
+  margin-left: 6px;
 }
 
 .msg-row.system {
