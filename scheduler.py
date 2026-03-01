@@ -16,6 +16,7 @@ from memory import (
     volatile_memory,
     update_shared_memory,
     set_ticker_active_eve_count,
+    set_ticker_social_conversation_count,
 )
 try:
     from location_planner import compute_hourly_location_plan, planned_location_id_for_datetime
@@ -1467,10 +1468,10 @@ class AEScheduler:
 
         return count
     
-    async def _run_social_simulations_for_batch(self, active_eves: list, db: Session):
+    async def _run_social_simulations_for_batch(self, active_eves: list, db: Session) -> int:
         """이 배치에 포함된 이브들과 관계된(친구/지인) 쌍에 대해 대화 요약을 생성합니다."""
         if not active_eves:
-            return
+            return 0
             
         active_ids = {e.id for e in active_eves}
         from models import EveRelationship
@@ -1486,6 +1487,7 @@ class AEScheduler:
             )
         ).all()
         
+        simulation_count = 0
         for rel in relationships:
             # 두 페르소나 객체 조회
             from models import Persona
@@ -1520,36 +1522,28 @@ class AEScheduler:
 
             rel.last_talked = datetime.now(KST)
             db.commit()
+            simulation_count += 1
             print(f"   [SOCIAL SIM] {p_a.name} & {p_b.name} social simulation complete")
             await asyncio.sleep(0.5)
+        return simulation_count
 
     async def _run_feed_to_dm_bridge(self, active_eves: list, db: Session) -> int:
-        """At feed timing, each active EVE proactively DMs all connected non-admin users."""
+        """When an Eve gets feed timing, send proactive DM to all connected users of that Eve."""
         if not active_eves:
             return 0
         dm_sent = 0
-        users = {u.id: u for u in db.query(User).filter(User.is_admin == False).all()}
-        if not users:
-            return 0
         for persona in active_eves:
             rooms = db.query(ChatRoom).filter(ChatRoom.persona_id == persona.id).all()
-            sent_for_persona = 0
-            seen_user_ids = set()
+            if not rooms:
+                continue
             for room in rooms:
-                uid = int(room.owner_id)
-                if uid in seen_user_ids:
-                    continue
-                seen_user_ids.add(uid)
-                user = users.get(uid)
+                user = room.owner or db.query(User).filter(User.id == room.owner_id).first()
                 if not user:
                     continue
-                sent = await engine.send_feed_timing_dm_to_connected_user(persona, user, db)
+                sent = await engine.send_feed_timing_dm_to_connected_user(persona, user, room, db)
                 if sent:
                     dm_sent += 1
-                    sent_for_persona += 1
-                await asyncio.sleep(0.08)
-            if sent_for_persona:
-                print(f"   [FEED->DM] {persona.name} proactive DMs sent: {sent_for_persona}")
+                await asyncio.sleep(0.2)
         return dm_sent
 
     async def hourly_feed_job(self):
@@ -1568,8 +1562,10 @@ class AEScheduler:
             post_budget, comment_budget, planned_count = await self._plan_hourly_actions(db, now)
             active_for_social = self._pick_candidate_personas(db, now, limit=20)
             set_ticker_active_eve_count(len(active_for_social))
+            social_sim_count = 0
             if active_for_social:
-                await self._run_social_simulations_for_batch(active_for_social, db)
+                social_sim_count = await self._run_social_simulations_for_batch(active_for_social, db)
+            set_ticker_social_conversation_count(social_sim_count)
             dm_sent = await self._run_feed_to_dm_bridge(active_for_social, db)
             print(
                 f">> SCHEDULER: Hourly plan created at {current_hour} "

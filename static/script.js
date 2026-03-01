@@ -1154,18 +1154,9 @@ async function openAdminPersonaProfile(personaId) {
         // 3. Social Graph
         const friendsContainer = document.getElementById("admin-detail-friends");
         if (details.friends && details.friends.length > 0) {
-            friendsContainer.innerHTML = details.friends.map(fr => `
-                <div style="padding:8px 12px; background:${fr.type === 'EVE' ? '#e3f2fd' : '#f3e5f5'}; border-radius:12px; font-size:12px; color:var(--text-main); display:flex; flex-direction:column; gap:4px; border:1px solid ${fr.type === 'EVE' ? '#bbdefb' : '#e1bee7'};">
-                    <div style="display:inline-flex; align-items:center; gap:6px; font-weight:600;">
-                        <span style="font-size:14px;">${fr.type === 'EVE' ? '🤖' : '👤'}</span>
-                        <span>${fr.name}</span>
-                        <span style="background:rgba(0,0,0,0.1); padding:2px 6px; border-radius:8px; font-size:10px;">${fr.relationship} ${fr.interactions !== '-' ? `(${fr.interactions})` : ''}</span>
-                    </div>
-                    ${fr.type === 'USER' && fr.relationship_summary ? `<div style="font-size:11px; color:var(--text-sub); line-height:1.35;">${fr.relationship_summary}</div>` : ''}
-                </div>
-            `).join("");
+            friendsContainer.innerHTML = details.friends.map(renderAdminFriendCard).join("");
         } else {
-            friendsContainer.innerHTML = '<div style="font-size:13px; color:var(--text-sub);">친구 없음</div>';
+            friendsContainer.innerHTML = '<div style="font-size:13px; color:var(--text-sub);">?? ??</div>';
         }
 
         // 4. Conversations & Memories
@@ -2197,41 +2188,65 @@ function send() {
     }
 }
 
+function renderAdminFriendCard(fr) {
+    const type = String(fr?.type || "");
+    const name = escapeHtml(fr?.name || "");
+    const relationship = escapeHtml(fr?.relationship || "");
+    const interactions = fr?.interactions !== "-" ? `(${escapeHtml(String(fr.interactions))})` : "";
+    const summary = String(fr?.relationship_summary_3line || "").trim();
+    const summaryHtml = summary
+        ? `<div style="margin-top:6px; padding:8px; border-radius:8px; background:rgba(255,255,255,0.55); font-size:11px; line-height:1.4; white-space:pre-wrap;">${escapeHtml(summary)}</div>`
+        : "";
+    const bg = type === "EVE" ? "#e3f2fd" : "#f3e5f5";
+    const border = type === "EVE" ? "#bbdefb" : "#e1bee7";
+    const label = type === "EVE" ? "EVE" : "USER";
+    return `
+        <div style="padding:10px 12px; background:${bg}; border-radius:12px; color:var(--text-main); border:1px solid ${border}; margin-bottom:8px;">
+            <div style="display:flex; align-items:center; gap:6px; font-size:12px; font-weight:700;">
+                <span style="font-size:11px; font-weight:800;">${label}</span>
+                <span>${name}</span>
+                <span style="background:rgba(0,0,0,0.1); padding:2px 6px; border-radius:8px; font-size:10px;">${relationship} ${interactions}</span>
+            </div>
+            ${type === "USER" ? summaryHtml : ""}
+        </div>
+    `;
+}
+
 function appendMsg(type, text, ts) {
     const area = document.getElementById("chat-area");
     if (!area) return;
+    const safeText = escapeHtml(text || "");
+    const safeTs = escapeHtml(ts || "");
 
     if (type === "ai") {
-        const friend = friendsData.find((item) => item.room_id === currentRoomId) || {};
+        const friend = findFriendByRoomId(currentRoomId) || {};
+        const senderName = escapeHtml(friend.name || "EVE");
+        const senderAvatar = String(friend.profile_image_url || "").trim();
         let group = area.lastElementChild;
-        const canReuseGroup =
-            group &&
-            group.classList &&
-            group.classList.contains("msg-row") &&
-            group.classList.contains("ai-group");
+        const shouldCreateGroup = !group || !group.classList || !group.classList.contains("ai-group");
 
-        if (!canReuseGroup) {
+        if (shouldCreateGroup) {
             group = document.createElement("div");
-            group.className = "msg-row ai-group";
-            const avatarHtml = friend.profile_image_url
-                ? `<img src="${friend.profile_image_url}" alt="${friend.name || "EVE"}">`
-                : `<span>${(friend.name || "EVE")[0] || "E"}</span>`;
+            group.className = "ai-group";
+            const avatarMarkup = senderAvatar
+                ? `<img class="ai-avatar-img" src="${senderAvatar}" alt="${senderName}">`
+                : `<div class="ai-avatar-fallback">${senderName.slice(0, 1)}</div>`;
             group.innerHTML = `
-                <div class="ai-avatar">${avatarHtml}</div>
+                <div class="ai-avatar">${avatarMarkup}</div>
                 <div class="ai-thread">
-                    <div class="ai-name">${friend.name || "EVE"}</div>
+                    <div class="ai-sender">${senderName}</div>
                     <div class="ai-bubbles"></div>
                 </div>
             `;
             area.appendChild(group);
         }
 
-        const bubbleStack = group.querySelector(".ai-bubbles");
-        if (bubbleStack) {
-            const item = document.createElement("div");
-            item.className = "ai-bubble-item";
-            item.innerHTML = `<div class="bubble ai">${text}</div><div class="msg-meta">${ts || ""}</div>`;
-            bubbleStack.appendChild(item);
+        const bubbles = group.querySelector(".ai-bubbles");
+        if (bubbles) {
+            const wrap = document.createElement("div");
+            wrap.className = "ai-bubble-wrap";
+            wrap.innerHTML = `<div class="bubble ai">${safeText}</div><div class="msg-meta">${safeTs}</div>`;
+            bubbles.appendChild(wrap);
         }
         area.scrollTop = area.scrollHeight;
         return;
@@ -2239,7 +2254,7 @@ function appendMsg(type, text, ts) {
 
     const row = document.createElement("div");
     row.className = `msg-row ${type}`;
-    row.innerHTML = `<div class="bubble ${type}">${text}</div><div class="msg-meta">${ts || ""}</div>`;
+    row.innerHTML = `<div class="bubble ${type}">${safeText}</div><div class="msg-meta">${safeTs}</div>`;
     area.appendChild(row);
     area.scrollTop = area.scrollHeight;
 }
