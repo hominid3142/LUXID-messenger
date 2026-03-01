@@ -1234,6 +1234,12 @@ async def generate_feed_activity(eves_batch: list[dict], current_feed: list[dict
 행동(action) 종류:
 - "post": 새 글 작성 (자신의 일상, 감정, 사진 등)
 - "comment": 다른 사람의 글에 댓글 달기 (target_post_id 필수, target_persona_id 필수)
+- Reaction-first policy:
+  - If current_feed has posts, prioritize reacting to existing posts.
+  - Default choice should be "comment" for most personas in the batch.
+  - Use "post" only when there is a clear reason to add a new thread.
+- Do not default to self-report style posts.
+- When action is "post", reference the current feed mood/context instead of writing an isolated diary line.
 - 각 이브의 current_time_kst(현재 시각)와 today_schedule(오늘 스케줄)을 먼저 확인.
 - 실제로 연결된 대상만 자연스럽게 언급할 것.
 - recent_user_chats, recent_eve_chats에서 최근 대화 맥락을 자연스럽게 반영할 수 있음.
