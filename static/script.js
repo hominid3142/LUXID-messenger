@@ -1416,6 +1416,7 @@ function renderChatList() {
             const colors = ["#FF9500", "#FF2D55", "#AF52DE", "#5AC8FA", "#34C759"];
             const color = colors[f.name.charCodeAt(0) % 5];
             const unread = unreadCounts[f.room_id] || 0;
+            const unreadLabel = unread > 99 ? "99+" : String(unread);
             const avatarContent = f.profile_image_url
                 ? `<img src="${f.profile_image_url}" class="avatar-img">`
                 : f.name[0];
@@ -1427,7 +1428,7 @@ function renderChatList() {
                     <div class="name-row"><span class="name">${f.name}</span></div>
                     <div class="last-msg">${lastMsg}</div>
                 </div>
-                <div class="unread-badge">${unread}</div>
+                <div class="unread-badge">${unreadLabel}</div>
                 <button class="delete-btn" onclick="deleteFriend(event, ${f.room_id})">×</button>
             </div>
         `;
@@ -1969,6 +1970,7 @@ function handleIncomingData(roomId, data) {
     if (!f) return;
     let hasIncomingFromHistory = false;
     let hasAnyNewFromHistory = false;
+    let incomingHistoryCount = 0;
 
     // 1. 히스토리 증분 업데이트 (기존과 비교하여 새 메시지만 append)
     if (data.history) {
@@ -1978,6 +1980,7 @@ function handleIncomingData(roomId, data) {
         if (hasAnyNewFromHistory) {
             const newMsgs = data.history.slice(oldLen);
             hasIncomingFromHistory = newMsgs.some((m) => String(m?.role || "") !== "user");
+            incomingHistoryCount = newMsgs.filter((m) => String(m?.role || "") !== "user").length;
         }
         f.history = data.history;
 
@@ -1992,6 +1995,11 @@ function handleIncomingData(roomId, data) {
                 chatArea.innerHTML = "";
                 data.history.forEach(m => appendMsg(m.role === 'user' ? 'user' : (m.role === 'system' ? 'system' : 'ai'), m.content, m.ts));
             }
+        } else if (incomingHistoryCount > 0) {
+            unreadCounts[roomId] = (unreadCounts[roomId] || 0) + incomingHistoryCount;
+            updateBottomNavBadges();
+            const latestIncoming = [...data.history].reverse().find((m) => String(m?.role || "") !== "user");
+            if (latestIncoming?.content) showInAppNoti(f, latestIncoming.content, roomId);
         }
     }
 
